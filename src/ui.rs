@@ -1,6 +1,6 @@
+use crate::profiling::HardwareProfile;
 use anyhow::Result;
 use inquire::Confirm;
-use crate::profiling::HardwareProfile;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -28,18 +28,29 @@ const AVAILABLE_MODELS: &[&str] = &[
     "mistral-7b-instruct",
 ];
 
-const AVAILABLE_SKILLS: &[&str] = &[
-    "context7",
-];
+const AVAILABLE_SKILLS: &[&str] = &["context7"];
 
-pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommended_model: &str) -> Result<SetupConfig> {
+pub fn prompt_user(
+    args: &crate::SetupArgs,
+    profile: &HardwareProfile,
+    recommended_model: &str,
+) -> Result<SetupConfig> {
     if args.yes {
         let models = if let Some(ref m_list) = args.models {
-            m_list.iter().map(|name| ModelSelection { name: name.clone(), quant: None }).collect()
+            m_list
+                .iter()
+                .map(|name| ModelSelection {
+                    name: name.clone(),
+                    quant: None,
+                })
+                .collect()
         } else {
             vec![ModelSelection {
                 name: recommended_model.to_string(),
-                quant: profile.recommended_models.first().map(|m| m.best_quant.clone()),
+                quant: profile
+                    .recommended_models
+                    .first()
+                    .map(|m| m.best_quant.clone()),
             }]
         };
 
@@ -48,20 +59,30 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
             run_in_docker: !args.no_docker,
             selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
             models_dir: args.models_dir.clone().unwrap_or_else(|| {
-                dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".opencode").join("models")
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".opencode")
+                    .join("models")
             }),
             port: args.port,
         });
     }
 
-    let default_choice = args.models.as_ref().and_then(|m| m.first()).map(|s| s.as_str()).unwrap_or(recommended_model);
-    
+    let default_choice = args
+        .models
+        .as_ref()
+        .and_then(|m| m.first())
+        .map(|s| s.as_str())
+        .unwrap_or(recommended_model);
+
     let is_dynamic = !profile.recommended_models.is_empty();
-    
+
     let all_options: Vec<String> = if is_dynamic {
-        profile.recommended_models.iter()
-            .map(|m| format!("{} (Score: {}, Quant: {})", m.name, m.score, m.best_quant)).collect()
+        profile
+            .recommended_models
+            .iter()
+            .map(|m| format!("{} (Score: {}, Quant: {})", m.name, m.score, m.best_quant))
+            .collect()
     } else {
         AVAILABLE_MODELS.iter().map(|&s| s.to_string()).collect()
     };
@@ -71,11 +92,14 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
         default_indices.push(idx);
     }
 
-    let selected_options = inquire::MultiSelect::new("Which models would you like to install and use?", all_options)
-        .with_default(&default_indices)
-        .with_help_message("Use Space to select/deselect, Enter to confirm. Type to filter.")
-        .with_page_size(10)
-        .prompt()?;
+    let selected_options = inquire::MultiSelect::new(
+        "Which models would you like to install and use?",
+        all_options,
+    )
+    .with_default(&default_indices)
+    .with_help_message("Use Space to select/deselect, Enter to confirm. Type to filter.")
+    .with_page_size(10)
+    .prompt()?;
 
     if selected_options.is_empty() {
         anyhow::bail!("You must select at least one model.");
@@ -89,7 +113,11 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
             if let Some(idx) = opt.find(" (") {
                 final_model = opt[..idx].to_string();
             }
-            if let Some(model) = profile.recommended_models.iter().find(|m| m.name == final_model) {
+            if let Some(model) = profile
+                .recommended_models
+                .iter()
+                .find(|m| m.name == final_model)
+            {
                 final_quant = Some(model.best_quant.clone());
             }
         }
@@ -106,16 +134,18 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
 
     // Fetch embedded skills dynamically
     let mut available_skills = crate::config::get_available_skills();
-    
+
     // Attempt to prioritize context7 at the top
     if let Some(idx) = available_skills.iter().position(|s| s == "context7") {
         let context7 = available_skills.remove(idx);
         available_skills.insert(0, context7);
     }
-    
+
     let default_models_dir = args.models_dir.clone().unwrap_or_else(|| {
-        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".opencode").join("models")
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".opencode")
+            .join("models")
     });
 
     let models_dir_str = inquire::Text::new("Where would you like to save models locally?")
@@ -124,13 +154,16 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
     let models_dir = std::path::PathBuf::from(models_dir_str);
 
     let default_indices = (0..available_skills.len()).collect::<Vec<_>>();
-    let selected_skills = inquire::MultiSelect::new("Select initial OpenCode skills to install:", available_skills.clone())
-        .with_default(&default_indices)
-        .with_help_message("Use Space to select/deselect, Enter to confirm.")
-        .prompt()?;
+    let selected_skills = inquire::MultiSelect::new(
+        "Select initial OpenCode skills to install:",
+        available_skills.clone(),
+    )
+    .with_default(&default_indices)
+    .with_help_message("Use Space to select/deselect, Enter to confirm.")
+    .prompt()?;
 
-    Ok(SetupConfig { 
-        models: selected_models, 
+    Ok(SetupConfig {
+        models: selected_models,
         run_in_docker,
         selected_skills,
         models_dir,
@@ -164,7 +197,10 @@ mod tests {
     #[test]
     fn test_setup_config_serialize() {
         let config = SetupConfig {
-            models: vec![ModelSelection { name: "test".to_string(), quant: None }],
+            models: vec![ModelSelection {
+                name: "test".to_string(),
+                quant: None,
+            }],
             run_in_docker: true,
             selected_skills: vec!["context7".to_string()],
             models_dir: std::path::PathBuf::from("/tmp/models"),

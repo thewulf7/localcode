@@ -4,7 +4,7 @@ mod runner;
 mod ui;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, Args as ClapArgs};
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use console::style;
 
 #[derive(Parser, Debug)]
@@ -65,45 +65,83 @@ async fn main() -> Result<()> {
         Commands::Start => {
             let config = config::load_localcode_config().await?;
             if config.run_in_docker {
-                let model_names = config.models.iter().map(|m| m.name.clone()).collect::<Vec<_>>().join(", ");
-                println!("{} {} with llama-swap in Docker on port {}...", 
-                    style("🐳 Starting").blue(), 
-                    style(&model_names).magenta().bold(), 
+                let model_names = config
+                    .models
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "{} {} with llama-swap in Docker on port {}...",
+                    style("🐳 Starting").blue(),
+                    style(&model_names).magenta().bold(),
                     style(config.port).yellow()
                 );
-                
+
                 if !config.models_dir.exists() {
-                    tokio::fs::create_dir_all(&config.models_dir).await.unwrap_or(());
+                    tokio::fs::create_dir_all(&config.models_dir)
+                        .await
+                        .unwrap_or(());
                 }
 
                 if let Err(e) = runner::download_models(&config.models, &config.models_dir).await {
-                    println!("\n{} {}", style("❌ Failed to download models:").red().bold(), e);
+                    println!(
+                        "\n{} {}",
+                        style("❌ Failed to download models:").red().bold(),
+                        e
+                    );
                     std::process::exit(1);
                 }
 
-                if let Err(e) = runner::start_llama_swap_docker(&config.models, &config.models_dir, config.port).await {
-                    println!("\n{} {}", style("❌ Failed to start Docker container:").red().bold(), e);
+                if let Err(e) =
+                    runner::start_llama_swap_docker(&config.models, &config.models_dir, config.port)
+                        .await
+                {
+                    println!(
+                        "\n{} {}",
+                        style("❌ Failed to start Docker container:").red().bold(),
+                        e
+                    );
                     std::process::exit(1);
                 }
                 println!("{} {}", style("➜").cyan(), style("The model server is starting in the background. \n  Run `localcode status` to view its loading progress!").white().bold());
-                println!("  {}", style("Run `localcode stop` later when you want to shut down the server.").dim());
+                println!(
+                    "  {}",
+                    style("Run `localcode stop` later when you want to shut down the server.")
+                        .dim()
+                );
             } else {
-                let model_names = config.models.iter().map(|m| m.name.clone()).collect::<Vec<_>>().join(", ");
-                println!("{} {} natively... (Not implemented in zero-config)", 
+                let model_names = config
+                    .models
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "{} {} natively... (Not implemented in zero-config)",
                     style("🚀 Starting").blue(),
                     style(&model_names).magenta().bold()
                 );
             }
         }
         Commands::Setup(setup_args) => {
-            println!("\n{}\n", style("✨ Welcome to OpenCode Global Setup! ✨").cyan().bold());
+            println!(
+                "\n{}\n",
+                style("✨ Welcome to OpenCode Global Setup! ✨")
+                    .cyan()
+                    .bold()
+            );
 
             // 1. Profile Hardware
-            println!("{}", style("🔍 Profiling hardware capabilities via llmfit...").dim());
+            println!(
+                "{}",
+                style("🔍 Profiling hardware capabilities via llmfit...").dim()
+            );
             let profile = profiling::profile_hardware().await?;
-            println!("{} {}GB VRAM, {}GB RAM", 
-                style("✓ Hardware Profile Detected:").green().bold(), 
-                style(profile.vram_gb).yellow(), 
+            println!(
+                "{} {}GB VRAM, {}GB RAM",
+                style("✓ Hardware Profile Detected:").green().bold(),
+                style(profile.vram_gb).yellow(),
                 style(profile.ram_gb).yellow()
             );
 
@@ -122,7 +160,11 @@ async fn main() -> Result<()> {
 
             // 4. Configure OpenCode
             let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            let first_model_name = user_config.models.first().map(|m| m.name.clone()).unwrap_or_else(|| "default".to_string());
+            let first_model_name = user_config
+                .models
+                .first()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "default".to_string());
             config::configure_opencode(&first_model_name, &provider_url, false).await?;
 
             // 5. Download default skills
@@ -131,11 +173,27 @@ async fn main() -> Result<()> {
             // 6. Save configuration to disk
             config::save_localcode_config(&user_config, false).await?;
 
-            println!("\n{}", style("🎉 Setup Complete! Global configuration saved.").green().bold());
-            println!("{} {}", style("➜").cyan(), style("Run `localcode start` to boot up the LLM server!").white().bold());
+            println!(
+                "\n{}",
+                style("🎉 Setup Complete! Global configuration saved.")
+                    .green()
+                    .bold()
+            );
+            println!(
+                "{} {}",
+                style("➜").cyan(),
+                style("Run `localcode start` to boot up the LLM server!")
+                    .white()
+                    .bold()
+            );
         }
         Commands::Init(setup_args) => {
-            println!("\n{}\n", style("✨ Initializing OpenCode Project Configuration ✨").cyan().bold());
+            println!(
+                "\n{}\n",
+                style("✨ Initializing OpenCode Project Configuration ✨")
+                    .cyan()
+                    .bold()
+            );
 
             let profile = profiling::profile_hardware().await?;
             let recommended_model = match profile.vram_gb {
@@ -149,14 +207,29 @@ async fn main() -> Result<()> {
             println!();
 
             let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            let first_model_name = user_config.models.first().map(|m| m.name.clone()).unwrap_or_else(|| "default".to_string());
-            
+            let first_model_name = user_config
+                .models
+                .first()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "default".to_string());
+
             // Pass true to indicate project-scoped
             config::configure_opencode(&first_model_name, &provider_url, true).await?;
             config::save_localcode_config(&user_config, true).await?;
 
-            println!("\n{}", style("🎉 Project Initialization Complete! Local project configuration saved.").green().bold());
-            println!("{} {}", style("➜").cyan(), style("Run `localcode start` to boot up the scoped LLM server!").white().bold());
+            println!(
+                "\n{}",
+                style("🎉 Project Initialization Complete! Local project configuration saved.")
+                    .green()
+                    .bold()
+            );
+            println!(
+                "{} {}",
+                style("➜").cyan(),
+                style("Run `localcode start` to boot up the scoped LLM server!")
+                    .white()
+                    .bold()
+            );
         }
     }
 

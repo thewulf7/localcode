@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio::fs;
 
-use rust_embed::RustEmbed;
 use crate::ui::SetupConfig;
+use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
 #[folder = "skills/"]
@@ -22,14 +22,18 @@ pub fn get_available_skills() -> Vec<String> {
     skills_vec
 }
 
-pub async fn configure_opencode(model_name: &str, provider_url: &str, is_project: bool) -> Result<()> {
+pub async fn configure_opencode(
+    model_name: &str,
+    provider_url: &str,
+    is_project: bool,
+) -> Result<()> {
     let target_dir = if is_project {
         PathBuf::from(".opencode")
     } else {
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home_dir.join(".opencode")
     };
-    
+
     let config_path = target_dir.join("config.json");
 
     if !target_dir.exists() {
@@ -46,14 +50,20 @@ pub async fn configure_opencode(model_name: &str, provider_url: &str, is_project
     };
 
     if let Some(obj) = config.as_object_mut() {
-        obj.insert("llm".to_string(), serde_json::json!({
-            "provider": "custom",
-            "model": model_name,
-            "api_base": provider_url,
-        }));
+        obj.insert(
+            "llm".to_string(),
+            serde_json::json!({
+                "provider": "custom",
+                "model": model_name,
+                "api_base": provider_url,
+            }),
+        );
     }
 
-    println!("💾 Writing OpenCode configuration to: {}", config_path.display());
+    println!(
+        "💾 Writing OpenCode configuration to: {}",
+        config_path.display()
+    );
     fs::write(config_path, serde_json::to_string_pretty(&config)?).await?;
 
     Ok(())
@@ -79,7 +89,10 @@ pub async fn save_localcode_config(config: &SetupConfig, is_project: bool) -> Re
 pub async fn load_localcode_config() -> Result<SetupConfig> {
     let local_path = PathBuf::from("localcode.json");
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let global_path = home_dir.join(".config").join("localcode").join("localcode.json");
+    let global_path = home_dir
+        .join(".config")
+        .join("localcode")
+        .join("localcode.json");
 
     let config_path = if local_path.exists() {
         println!("📂 Using project-scoped local configuration from ./localcode.json");
@@ -87,7 +100,9 @@ pub async fn load_localcode_config() -> Result<SetupConfig> {
     } else if global_path.exists() {
         global_path
     } else {
-        anyhow::bail!("Configuration not found. Please run `localcode setup` or `localcode init` first.");
+        anyhow::bail!(
+            "Configuration not found. Please run `localcode setup` or `localcode init` first."
+        );
     };
 
     let content = fs::read_to_string(config_path).await?;
@@ -120,11 +135,11 @@ pub async fn download_initial_skills(selected_skills: &[String]) -> Result<()> {
         if selected_skills.iter().any(|s| s == skill_name) {
             if let Some(embedded_file) = SkillsAssets::get(path) {
                 let dest_path = skills_dir.join(path);
-                
+
                 if let Some(parent) = dest_path.parent() {
                     fs::create_dir_all(parent).await?;
                 }
-                
+
                 fs::write(&dest_path, embedded_file.data).await?;
             }
         }

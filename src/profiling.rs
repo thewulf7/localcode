@@ -74,7 +74,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
             println!("⚠️ llmfit failed. Using fallback HW detection.");
         }
     }
-    
+
     // If llmfit didn't execute properly, Fallback hardware detection here...
     if recommended_models.is_empty() {
         #[cfg(target_os = "windows")]
@@ -83,7 +83,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
             if let Ok(output) = tokio::process::Command::new("wmic")
                 .args(&["computersystem", "get", "TotalPhysicalMemory"])
                 .output()
-                .await 
+                .await
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -100,7 +100,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
             if let Ok(output) = tokio::process::Command::new("nvidia-smi")
                 .args(&["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
                 .output()
-                .await 
+                .await
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut total_vram_mb: u64 = 0;
@@ -118,7 +118,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
             }
         }
     }
-    
+
     Ok(HardwareProfile {
         vram_gb,
         ram_gb,

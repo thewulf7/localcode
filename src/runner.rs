@@ -1,18 +1,25 @@
+use crate::ui::ModelSelection;
 use anyhow::{Context, Result};
+use hf_hub::api::sync::ApiBuilder;
 use std::process::Stdio;
 use tokio::process::Command;
-use crate::ui::ModelSelection;
-use hf_hub::api::sync::ApiBuilder;
 
-pub async fn extract_hf_repo_and_file(model_name: &str, quant: &Option<String>) -> (String, Option<String>) {
+pub async fn extract_hf_repo_and_file(
+    model_name: &str,
+    quant: &Option<String>,
+) -> (String, Option<String>) {
     if let Some(q) = quant {
         // It's a dynamic llmfit model, format as `user/model` and `*quant.gguf`
         let parts: Vec<&str> = model_name.split('/').collect();
-        let base_name = if parts.len() > 1 { parts[1] } else { model_name };
-        
+        let base_name = if parts.len() > 1 {
+            parts[1]
+        } else {
+            model_name
+        };
+
         let repo = format!("bartowski/{}-GGUF", base_name);
         let file = format!("{}-{}.gguf", base_name, q);
-        
+
         return (repo, Some(file));
     }
 
@@ -26,13 +33,16 @@ pub async fn extract_hf_repo_and_file(model_name: &str, quant: &Option<String>) 
         "mistral-7b-instruct" => "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf".to_string(),
         _ => "https://huggingface.co/lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf".to_string(), // Fallback
     };
-    
+
     ("".to_string(), Some(default_url))
 }
 
-pub async fn download_models(models: &[ModelSelection], models_dir: &std::path::Path) -> Result<()> {
-    use indicatif::{ProgressBar, ProgressStyle};
+pub async fn download_models(
+    models: &[ModelSelection],
+    models_dir: &std::path::Path,
+) -> Result<()> {
     use console::style;
+    use indicatif::{ProgressBar, ProgressStyle};
 
     let api = ApiBuilder::new()
         .with_cache_dir(models_dir.to_path_buf())
@@ -40,20 +50,26 @@ pub async fn download_models(models: &[ModelSelection], models_dir: &std::path::
 
     for m in models {
         let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
-        
+
         if repo.is_empty() || file.is_none() {
             continue;
         }
 
         let file_name = file.unwrap();
 
-        println!("{} {}", style("📥 Checking/Downloading").cyan(), style(&m.name).bold().magenta());
+        println!(
+            "{} {}",
+            style("📥 Checking/Downloading").cyan(),
+            style(&m.name).bold().magenta()
+        );
 
         let pb = ProgressBar::new_spinner();
-        pb.set_style(ProgressStyle::default_spinner()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-            .template("{spinner:.green} {msg}")
-            .unwrap());
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
         pb.set_message(format!("Downloading {}", file_name));
 
         // Use spawn_blocking since hf_hub is sync
@@ -64,26 +80,34 @@ pub async fn download_models(models: &[ModelSelection], models_dir: &std::path::
             let repo_api = api_clone.model(repo_clone);
             // This will block until downloaded or verify it exists
             repo_api.get(&file_name_clone)
-        }).await??;
+        })
+        .await??;
 
         pb.finish_with_message(format!("✅ {} downloaded.", file_name));
     }
-    
+
     Ok(())
 }
 
-pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std::path::Path, port: u16) -> Result<()> {
+pub async fn start_llama_swap_docker(
+    models: &[ModelSelection],
+    models_dir: &std::path::Path,
+    port: u16,
+) -> Result<()> {
     println!("📦 Pulling ghcr.io/mostlygeek/llama-swap:cuda... (This may take a moment)");
-    
+
     // First, verify docker is installed
     let docker_check = Command::new("docker")
         .arg("--version")
         .output()
         .await
         .context("Failed to execute docker command. Is docker installed?")?;
-        
+
     if !docker_check.status.success() {
-        return Err(anyhow::anyhow!("Docker is not running or not installed correctly: {}", String::from_utf8_lossy(&docker_check.stderr)));
+        return Err(anyhow::anyhow!(
+            "Docker is not running or not installed correctly: {}",
+            String::from_utf8_lossy(&docker_check.stderr)
+        ));
     }
 
     // Attempt to forcefully remove any existing container with the same name to avoid conflicts
@@ -98,11 +122,11 @@ pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std
 
     for m in models {
         let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
-        
+
         yaml_content.push_str(&format!("  {}:\n", m.name));
-        
+
         let is_autocomplete = is_autocomplete_model(&m.name);
-        
+
         if is_autocomplete {
             autocomplete_models.push(m.name.clone());
         }
@@ -112,14 +136,17 @@ pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std
         } else {
             String::new()
         };
-        
+
         let repo_arg = if !repo.is_empty() {
             format!("--hf-repo {}", repo)
         } else {
             String::new()
         };
 
-        yaml_content.push_str(&format!("    cmd: llama-server --port ${{PORT}} {} {} --host 0.0.0.0 --ctx-size 8192\n", repo_arg, file_arg));
+        yaml_content.push_str(&format!(
+            "    cmd: llama-server --port ${{PORT}} {} {} --host 0.0.0.0 --ctx-size 8192\n",
+            repo_arg, file_arg
+        ));
     }
 
     if !autocomplete_models.is_empty() {
@@ -131,37 +158,51 @@ pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std
 
     let config_path = models_dir.join("llama-swap.yaml");
     tokio::fs::write(&config_path, yaml_content).await?;
-    
+
     let port_mapping = format!("{}:8080", port);
     let volume_mapping = format!("{}:/models", models_dir.to_string_lossy());
     let config_mount = format!("{}:/app/config.yaml", config_path.to_string_lossy());
 
     let mut args = vec![
-        "run".to_string(), 
+        "run".to_string(),
         "-d".to_string(), // run completely detached in the background
-        "--name".to_string(), "opencode-llm".to_string(),
-        "--gpus".to_string(), "all".to_string(),
-        "-e".to_string(), "HF_HOME=/models".to_string(),
-        "-p".to_string(), port_mapping, 
-        "-v".to_string(), volume_mapping,
-        "-v".to_string(), config_mount,
+        "--name".to_string(),
+        "opencode-llm".to_string(),
+        "--gpus".to_string(),
+        "all".to_string(),
+        "-e".to_string(),
+        "HF_HOME=/models".to_string(),
+        "-p".to_string(),
+        port_mapping,
+        "-v".to_string(),
+        volume_mapping,
+        "-v".to_string(),
+        config_mount,
         "ghcr.io/mostlygeek/llama-swap:cuda".to_string(),
     ];
-    
-    let mut output = Command::new("docker")
-        .args(&args)
-        .output()
-        .await?;
+
+    let mut output = Command::new("docker").args(&args).output().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         // Auto-Detect if the failure is just because they don't have Nvidia Container Toolkit or WSL GPU passthrough set up
         if stderr.contains("could not select device driver") || stderr.contains("nvidia") {
             use console::style;
-            println!("{} {}", style("⚠️").yellow(), style("NVIDIA Container Toolkit not detected or GPU not available.").yellow());
-            println!("{} {}", style("ℹ").cyan(), style("Falling back to CPU mode (this will be slower).").dim());
-            println!("  {}", style("To enable GPU acceleration, install the NVIDIA Container Toolkit:").dim());
+            println!(
+                "{} {}",
+                style("⚠️").yellow(),
+                style("NVIDIA Container Toolkit not detected or GPU not available.").yellow()
+            );
+            println!(
+                "{} {}",
+                style("ℹ").cyan(),
+                style("Falling back to CPU mode (this will be slower).").dim()
+            );
+            println!(
+                "  {}",
+                style("To enable GPU acceleration, install the NVIDIA Container Toolkit:").dim()
+            );
             println!("  {}", style("https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html").dim().underlined());
             println!();
 
@@ -170,20 +211,26 @@ pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std
                 args.remove(pos); // remove "--gpus"
                 args.remove(pos); // remove "all"
             }
-            if let Some(pos) = args.iter().position(|x| x == "ghcr.io/mostlygeek/llama-swap:cuda") {
+            if let Some(pos) = args
+                .iter()
+                .position(|x| x == "ghcr.io/mostlygeek/llama-swap:cuda")
+            {
                 args[pos] = "ghcr.io/mostlygeek/llama-swap:cpu".to_string();
             }
-            
-            output = Command::new("docker")
-                .args(&args)
-                .output()
-                .await?;
+
+            output = Command::new("docker").args(&args).output().await?;
 
             if !output.status.success() {
-                return Err(anyhow::anyhow!("Docker failed to start container on CPU fallback. Ensure ports are not in use.\nError: {}", String::from_utf8_lossy(&output.stderr)));
+                return Err(anyhow::anyhow!(
+                    "Docker failed to start container on CPU fallback. Ensure ports are not in use.\nError: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
             }
         } else {
-            return Err(anyhow::anyhow!("Docker failed to start container. Ensure ports are not in use.\nError: {}", stderr));
+            return Err(anyhow::anyhow!(
+                "Docker failed to start container. Ensure ports are not in use.\nError: {}",
+                stderr
+            ));
         }
     }
 
@@ -193,7 +240,10 @@ pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std
 pub async fn show_status() -> Result<()> {
     use console::style;
 
-    println!("{}", style("Streaming live logs from opencode-llm container... (Press Ctrl+C to stop)").cyan());
+    println!(
+        "{}",
+        style("Streaming live logs from opencode-llm container... (Press Ctrl+C to stop)").cyan()
+    );
 
     // We use `--tail 50` so we don't stream gigantic past histories immediately
     let mut child = Command::new("docker")
@@ -212,29 +262,36 @@ pub async fn show_status() -> Result<()> {
 
 pub async fn stop_server() -> Result<()> {
     use console::style;
-    
-    println!("{}", style("🛑 Stopping and removing local LLM Docker container...").yellow());
-    
+
+    println!(
+        "{}",
+        style("🛑 Stopping and removing local LLM Docker container...").yellow()
+    );
+
     let status = Command::new("docker")
         .args(&["rm", "-f", "opencode-llm"])
         .output()
         .await?;
 
     if status.status.success() {
-        println!("{} {}", style("✓").green().bold(), style("Server stopped successfully.").green());
+        println!(
+            "{} {}",
+            style("✓").green().bold(),
+            style("Server stopped successfully.").green()
+        );
     }
-    
+
     Ok(())
 }
 
 // Ensure the helper grouping heuristic is standalone so we can cleanly test it
 pub fn is_autocomplete_model(model_name: &str) -> bool {
     let lower = model_name.to_lowercase();
-    lower.contains("mini") || 
-    lower.contains("coder") || 
-    lower.contains("1.5b") || 
-    lower.contains("2b") ||
-    lower.contains("0.5b")
+    lower.contains("mini")
+        || lower.contains("coder")
+        || lower.contains("1.5b")
+        || lower.contains("2b")
+        || lower.contains("0.5b")
 }
 
 #[cfg(test)]
