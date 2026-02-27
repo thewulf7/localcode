@@ -1,0 +1,8 @@
+﻿
+=== System Specifications ===
+CPU: AMD Ryzen Threadripper PRO 3955WX 16-Cores      (32 cores)
+Total RAM: 127.86 GB
+Available RAM: 103.25 GB
+Backend: CUDA
+GPU: NVIDIA GeForce RTX 5060 Ti (15.93 GB VRAM, CUDA)
+

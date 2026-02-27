@@ -1,0 +1,170 @@
+﻿{
+  "models": [
+    {
+      "best_quant": "Q3_K_M",
+      "category": "Reasoning",
+      "context_length": 131072,
+      "estimated_tps": 20.5,
+      "fit_level": "Perfect",
+      "is_moe": false,
+      "memory_available_gb": 15.93,
+      "memory_required_gb": 7.6,
+      "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+      "notes": [
+        "GPU: model loaded into VRAM",
+        "Best quantization for hardware: Q3_K_M (model default: Q4_K_M)",
+        "Estimated speed: 20.5 tok/s"
+      ],
+      "parameter_count": "14.8B",
+      "params_b": 14.77,
+      "provider": "DeepSeek",
+      "run_mode": "GPU",
+      "score": 86.6,
+      "score_components": {
+        "context": 100.0,
+        "fit": 98.2,
+        "quality": 81.0,
+        "speed": 81.9
+      },
+      "use_case": "Advanced reasoning, chain-of-thought",
+      "utilization_pct": 47.7
+    },
+    {
+      "best_quant": "Q6_K",
+      "category": "Reasoning",
+      "context_length": 131072,
+      "estimated_tps": 30.2,
+      "fit_level": "Perfect",
+      "is_moe": false,
+      "memory_available_gb": 15.93,
+      "memory_required_gb": 3.9,
+      "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+      "notes": [
+        "GPU: model loaded into VRAM",
+        "Best quantization for hardware: Q6_K (model default: Q4_K_M)",
+        "Estimated speed: 30.2 tok/s"
+      ],
+      "parameter_count": "7.6B",
+      "params_b": 7.62,
+      "provider": "DeepSeek",
+      "run_mode": "GPU",
+      "score": 83.7,
+      "score_components": {
+        "context": 100.0,
+        "fit": 79.6,
+        "quality": 76.0,
+        "speed": 100.0
+      },
+      "use_case": "Advanced reasoning, chain-of-thought",
+      "utilization_pct": 24.5
+    },
+    {
+      "best_quant": "Q5_K_M",
+      "category": "Multimodal",
+      "context_length": 131072,
+      "estimated_tps": 20.2,
+      "fit_level": "Perfect",
+      "is_moe": false,
+      "memory_available_gb": 15.93,
+      "memory_required_gb": 6.1,
+      "name": "google/gemma-3-12b-it",
+      "notes": [
+        "GPU: model loaded into VRAM",
+        "Best quantization for hardware: Q5_K_M (model default: Q4_K_M)",
+        "Estimated speed: 20.2 tok/s"
+      ],
+      "parameter_count": "12B",
+      "params_b": 12.0,
+      "provider": "Google",
+      "run_mode": "GPU",
+      "score": 82.2,
+      "score_components": {
+        "context": 100.0,
+        "fit": 90.6,
+        "quality": 87.0,
+        "speed": 50.4
+      },
+      "use_case": "Multimodal, vision and text",
+      "utilization_pct": 38.3
+    },
+    {
+      "best_quant": "Q5_K_M",
+      "category": "Coding",
+      "context_length": 32768,
+      "estimated_tps": 16.4,
+      "fit_level": "Perfect",
+      "is_moe": false,
+      "memory_available_gb": 15.93,
+      "memory_required_gb": 7.6,
+      "name": "Qwen/Qwen2.5-Coder-14B-Instruct",
+      "notes": [
+        "GPU: model loaded into VRAM",
+        "Best quantization for hardware: Q5_K_M (model default: Q4_K_M)",
+        "Estimated speed: 16.4 tok/s"
+      ],
+      "parameter_count": "14.8B",
+      "params_b": 14.77,
+      "provider": "Alibaba",
+      "run_mode": "GPU",
+      "score": 81.9,
+      "score_components": {
+        "context": 100.0,
+        "fit": 98.2,
+        "quality": 88.0,
+        "speed": 41.0
+      },
+      "use_case": "Code generation and completion",
+      "utilization_pct": 47.7
+    },
+    {
+      "best_quant": "Q8_0",
+      "category": "Coding",
+      "context_length": 16384,
+      "estimated_tps": 27.0,
+      "fit_level": "Perfect",
+      "is_moe": false,
+      "memory_available_gb": 15.93,
+      "memory_required_gb": 3.7,
+      "name": "bigcode/starcoder2-7b",
+      "notes": [
+        "GPU: model loaded into VRAM",
+        "Best quantization for hardware: Q8_0 (model default: Q4_K_M)",
+        "Estimated speed: 27.0 tok/s"
+      ],
+      "parameter_count": "7.2B",
+      "params_b": 7.17,
+      "provider": "BigCode",
+      "run_mode": "GPU",
+      "score": 81.3,
+      "score_components": {
+        "context": 100.0,
+        "fit": 78.6,
+        "quality": 82.0,
+        "speed": 67.5
+      },
+      "use_case": "Code generation and completion",
+      "utilization_pct": 23.2
+    }
+  ],
+  "system": {
+    "available_ram_gb": 103.23,
+    "backend": "CUDA",
+    "cpu_cores": 32,
+    "cpu_name": "AMD Ryzen Threadripper PRO 3955WX 16-Cores     ",
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA GeForce RTX 5060 Ti",
+    "gpu_vram_gb": 15.93,
+    "gpus": [
+      {
+        "backend": "CUDA",
+        "count": 1,
+        "name": "NVIDIA GeForce RTX 5060 Ti",
+        "unified_memory": false,
+        "vram_gb": 15.93
+      }
+    ],
+    "has_gpu": true,
+    "total_ram_gb": 127.86,
+    "unified_memory": false
+  }
+}

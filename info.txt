@@ -1,0 +1,31 @@
+﻿
+=== deepseek-ai/DeepSeek-R1-Distill-Qwen-14B ===
+
+Provider: DeepSeek
+Parameters: 14.8B
+Quantization: Q4_K_M
+Best Quant: Q3_K_M
+Context Length: 131072 tokens
+Use Case: Advanced reasoning, chain-of-thought
+Category: Reasoning
+
+Score Breakdown:
+  Overall Score: 86.6 / 100
+  Quality: 81  Speed: 82  Fit: 98  Context: 100
+  Estimated Speed: 20.5 tok/s
+
+Resource Requirements:
+  Min VRAM: 7.6 GB
+  Min RAM: 8.3 GB (CPU inference)
+  Recommended RAM: 13.8 GB
+
+Fit Analysis:
+  Status: ≡ƒƒó Perfect
+  Run Mode: GPU
+  Memory Utilization: 47.7% (7.6 / 15.9 GB)
+
+Notes:
+  GPU: model loaded into VRAM
+  Best quantization for hardware: Q3_K_M (model default: Q4_K_M)
+  Estimated speed: 20.5 tok/s
+

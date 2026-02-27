@@ -1,0 +1,21 @@
+﻿Right-size LLM models to your system's hardware
+
+Usage: llmfit.exe [OPTIONS] [COMMAND]
+
+Commands:
+  system     Show system hardware specifications
+  list       List all available LLM models
+  fit        Find models that fit your system (classic table output)
+  search     Search for specific models
+  info       Show detailed information about a specific model
+  recommend  Recommend top models for your hardware (JSON-friendly)
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -p, --perfect        Show only models that perfectly match recommended specs
+  -n, --limit <LIMIT>  Limit number of results
+      --cli            Use classic CLI table output instead of TUI
+      --json           Output results as JSON (for tool integration)
+      --memory <SIZE>  Override GPU VRAM size (e.g. "32G", "32000M", "1.5T"). Useful when GPU memory autodetection fails
+  -h, --help           Print help
+  -V, --version        Print version

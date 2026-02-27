@@ -1,0 +1,120 @@
+use anyhow::Result;
+use std::path::PathBuf;
+use tokio::fs;
+
+use rust_embed::RustEmbed;
+use crate::ui::SetupConfig;
+
+#[derive(RustEmbed)]
+#[folder = "skills/"]
+pub struct SkillsAssets;
+
+pub fn get_available_skills() -> Vec<String> {
+    let mut skills = std::collections::HashSet::new();
+    for file in SkillsAssets::iter() {
+        let path = file.as_ref();
+        if let Some(slash_idx) = path.find('/') {
+            skills.insert(path[..slash_idx].to_string());
+        }
+    }
+    let mut skills_vec: Vec<String> = skills.into_iter().collect();
+    skills_vec.sort();
+    skills_vec
+}
+
+pub async fn configure_opencode(model_name: &str, provider_url: &str) -> Result<()> {
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let opencode_dir = home_dir.join(".opencode");
+    let config_path = opencode_dir.join("config.json");
+
+    if !opencode_dir.exists() {
+        fs::create_dir_all(&opencode_dir).await?;
+    }
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        let existing_content = fs::read_to_string(&config_path).await?;
+        serde_json::from_str(&existing_content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        println!("📥 Initializing official OpenCode config template...");
+        let template_content = include_str!("../opencode.json");
+        serde_json::from_str(template_content).unwrap_or_else(|_| serde_json::json!({}))
+    };
+
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("llm".to_string(), serde_json::json!({
+            "provider": "custom",
+            "model": model_name,
+            "api_base": provider_url,
+        }));
+    }
+
+    println!("💾 Writing OpenCode configuration to: {}", config_path.display());
+    fs::write(config_path, serde_json::to_string_pretty(&config)?).await?;
+
+    Ok(())
+}
+
+pub async fn save_localcode_config(config: &SetupConfig) -> Result<()> {
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let opencode_dir = home_dir.join(".opencode");
+    let config_path = opencode_dir.join("localcode.json");
+
+    if !opencode_dir.exists() {
+        fs::create_dir_all(&opencode_dir).await?;
+    }
+
+    fs::write(config_path, serde_json::to_string_pretty(config)?).await?;
+    Ok(())
+}
+
+pub async fn load_localcode_config() -> Result<SetupConfig> {
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let config_path = home_dir.join(".opencode").join("localcode.json");
+
+    if !config_path.exists() {
+        anyhow::bail!("Configuration not found. Please run `localcode setup` first.");
+    }
+
+    let content = fs::read_to_string(config_path).await?;
+    let config: SetupConfig = serde_json::from_str(&content)?;
+    Ok(config)
+}
+
+pub async fn download_initial_skills(selected_skills: &[String]) -> Result<()> {
+    if selected_skills.is_empty() {
+        return Ok(());
+    }
+
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let skills_dir = home_dir.join(".opencode").join("skills");
+
+    if !skills_dir.exists() {
+        fs::create_dir_all(&skills_dir).await?;
+    }
+
+    println!("🚀 Installing selected OpenCode skills...");
+
+    for file in SkillsAssets::iter() {
+        let path = file.as_ref();
+        let skill_name = if let Some(idx) = path.find('/') {
+            &path[..idx]
+        } else {
+            continue;
+        };
+
+        if selected_skills.iter().any(|s| s == skill_name) {
+            if let Some(embedded_file) = SkillsAssets::get(path) {
+                let dest_path = skills_dir.join(path);
+                
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+                
+                fs::write(&dest_path, embedded_file.data).await?;
+            }
+        }
+    }
+
+    println!("✅ Skills installed.");
+    Ok(())
+}
