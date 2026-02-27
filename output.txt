@@ -1,0 +1,33 @@
+    Checking localcode v0.1.0 (C:\Users\admin\Developer\localcode)
+error[E0382]: use of moved value: `api`
+  --> src\runner.rs:62:37
+   |
+37 |     let api = ApiBuilder::new()
+   |         --- move occurs because `api` has type `hf_hub::api::sync::Api`, which does not implement the `Copy` trait
+...
+41 |     for m in models {
+   |     --------------- inside of this loop
+...
+62 |         tokio::task::spawn_blocking(move || {
+   |                                     ^^^^^^^ value moved into closure here, in previous iteration of loop
+63 |             let repo_api = api.model(repo_clone);
+   |                            --- use occurs due to use in closure
+   |
+help: consider moving the expression out of the loop so it is only moved once
+   |
+41 ~     let mut value = api.model(repo_clone);
+42 ~     for m in models {
+43 |         let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
+...
+63 |         tokio::task::spawn_blocking(move || {
+64 ~             let repo_api = value;
+   |
+help: consider cloning the value before moving it into the closure
+   |
+62 ~         let value = api.clone();
+63 ~         tokio::task::spawn_blocking(move || {
+64 ~             let repo_api = value.model(repo_clone);
+   |
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `localcode` (bin "localcode") due to 1 previous error

@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::process::Stdio;
 use tokio::process::Command;
+use crate::ui::ModelSelection;
+use hf_hub::api::sync::ApiBuilder;
 
 pub async fn extract_hf_repo_and_file(model_name: &str, quant: &Option<String>) -> (String, Option<String>) {
     if let Some(q) = quant {
@@ -28,8 +30,50 @@ pub async fn extract_hf_repo_and_file(model_name: &str, quant: &Option<String>) 
     ("".to_string(), Some(default_url))
 }
 
-pub async fn start_llama_cpp_docker(repo: &str, models_dir: &std::path::Path, file: Option<&str>, port: u16) -> Result<()> {
-    println!("📦 Pulling ghcr.io/ggml-org/llama.cpp:server... (This may take a moment)");
+pub async fn download_models(models: &[ModelSelection], models_dir: &std::path::Path) -> Result<()> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use console::style;
+
+    let api = ApiBuilder::new()
+        .with_cache_dir(models_dir.to_path_buf())
+        .build()?;
+
+    for m in models {
+        let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
+        
+        if repo.is_empty() || file.is_none() {
+            continue;
+        }
+
+        let file_name = file.unwrap();
+
+        println!("{} {}", style("📥 Checking/Downloading").cyan(), style(&m.name).bold().magenta());
+
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("{spinner:.green} {msg}")
+            .unwrap());
+        pb.set_message(format!("Downloading {}", file_name));
+
+        // Use spawn_blocking since hf_hub is sync
+        let repo_clone = repo.clone();
+        let file_name_clone = file_name.clone();
+        let api_clone = api.clone();
+        tokio::task::spawn_blocking(move || {
+            let repo_api = api_clone.model(repo_clone);
+            // This will block until downloaded or verify it exists
+            repo_api.get(&file_name_clone)
+        }).await??;
+
+        pb.finish_with_message(format!("✅ {} downloaded.", file_name));
+    }
+    
+    Ok(())
+}
+
+pub async fn start_llama_swap_docker(models: &[ModelSelection], models_dir: &std::path::Path, port: u16) -> Result<()> {
+    println!("📦 Pulling ghcr.io/mostlygeek/llama-swap:cuda... (This may take a moment)");
     
     // First, verify docker is installed
     let docker_check = Command::new("docker")
@@ -47,35 +91,62 @@ pub async fn start_llama_cpp_docker(repo: &str, models_dir: &std::path::Path, fi
         .args(&["rm", "-f", "opencode-llm"])
         .output()
         .await;
+
+    // Generate config.yaml for llama-swap
+    let mut yaml_content = String::from("models:\n");
+    let mut autocomplete_models = Vec::new();
+
+    for m in models {
+        let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
+        
+        yaml_content.push_str(&format!("  {}:\n", m.name));
+        
+        let is_autocomplete = is_autocomplete_model(&m.name);
+        
+        if is_autocomplete {
+            autocomplete_models.push(m.name.clone());
+        }
+
+        let file_arg = if let Some(f) = file {
+            format!("--hf-file {}", f)
+        } else {
+            String::new()
+        };
+        
+        let repo_arg = if !repo.is_empty() {
+            format!("--hf-repo {}", repo)
+        } else {
+            String::new()
+        };
+
+        yaml_content.push_str(&format!("    cmd: llama-server --port ${{PORT}} {} {} --host 0.0.0.0 --ctx-size 8192\n", repo_arg, file_arg));
+    }
+
+    if !autocomplete_models.is_empty() {
+        yaml_content.push_str("\ngroups:\n  autocomplete:\n    persistent: true\n    swap: false\n    exclusive: false\n    members:\n");
+        for model_name in autocomplete_models {
+            yaml_content.push_str(&format!("      - {}\n", model_name));
+        }
+    }
+
+    let config_path = models_dir.join("llama-swap.yaml");
+    tokio::fs::write(&config_path, yaml_content).await?;
     
     let port_mapping = format!("{}:8080", port);
     let volume_mapping = format!("{}:/models", models_dir.to_string_lossy());
+    let config_mount = format!("{}:/app/config.yaml", config_path.to_string_lossy());
+
     let mut args = vec![
         "run".to_string(), 
         "-d".to_string(), // run completely detached in the background
         "--name".to_string(), "opencode-llm".to_string(),
         "--gpus".to_string(), "all".to_string(),
+        "-e".to_string(), "HF_HOME=/models".to_string(),
         "-p".to_string(), port_mapping, 
         "-v".to_string(), volume_mapping,
-        "ghcr.io/ggml-org/llama.cpp:server".to_string(),
+        "-v".to_string(), config_mount,
+        "ghcr.io/mostlygeek/llama-swap:cuda".to_string(),
     ];
-    
-    if !repo.is_empty() {
-        args.push("--hf-repo".to_string());
-        args.push(repo.to_string());
-    }
-    
-    if let Some(f) = file {
-        args.push("--hf-file".to_string());
-        args.push(f.to_string());
-    }
-    
-    args.extend(vec![
-        "-m".to_string(), "/models/model.gguf".to_string(),
-        "--ctx-size".to_string(), "8192".to_string(),
-        "--host".to_string(), "0.0.0.0".to_string(),
-        "--port".to_string(), "8080".to_string()
-    ]);
     
     let mut output = Command::new("docker")
         .args(&args)
@@ -94,10 +165,13 @@ pub async fn start_llama_cpp_docker(repo: &str, models_dir: &std::path::Path, fi
             println!("  {}", style("https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html").dim().underlined());
             println!();
 
-            // Re-run without --gpus all
+            // Re-run without --gpus all and use cpu image
             if let Some(pos) = args.iter().position(|x| x == "--gpus") {
                 args.remove(pos); // remove "--gpus"
                 args.remove(pos); // remove "all"
+            }
+            if let Some(pos) = args.iter().position(|x| x == "ghcr.io/mostlygeek/llama-swap:cuda") {
+                args[pos] = "ghcr.io/mostlygeek/llama-swap:cpu".to_string();
             }
             
             output = Command::new("docker")
@@ -117,94 +191,22 @@ pub async fn start_llama_cpp_docker(repo: &str, models_dir: &std::path::Path, fi
 }
 
 pub async fn show_status() -> Result<()> {
-    use indicatif::{ProgressBar, ProgressStyle};
     use console::style;
+
+    println!("{}", style("Streaming live logs from opencode-llm container... (Press Ctrl+C to stop)").cyan());
 
     // We use `--tail 50` so we don't stream gigantic past histories immediately
     let mut child = Command::new("docker")
         .args(&["logs", "-f", "--tail", "50", "opencode-llm"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()?;
 
-    // Setup beautiful progress spinner
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("{spinner:.green} {msg}")
-        .unwrap());
-    
-    let stderr = child.stderr.take().expect("Failed to grab stderr");
-    let mut reader = tokio::io::BufReader::new(stderr);
-    let mut line = String::new();
-    
-    pb.set_message("Waiting for container startup logs...");
-    
-    use tokio::io::AsyncBufReadExt;
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break, // EOF
-            Ok(_) => {
-                let trimmed = line.trim();
-                // Check if the server is ready
-                if trimmed.contains("HTTP server listening") {
-                    pb.finish_and_clear();
-                    println!("{} {}", style("✅ llama.cpp server is actively running on:").green().bold(), style("http://localhost:8080").cyan());
-                    break;
-                }
-                
-                if trimmed.contains("llm_load_print_meta:") {
-                    if trimmed.contains("model type =") || trimmed.contains("n_ctx_train =") {
-                        let parts: Vec<&str> = trimmed.split("=").collect();
-                        if parts.len() == 2 {
-                            let stat = parts[0].replace("llm_load_print_meta:", "").trim().to_string();
-                            let val = parts[1].trim();
-                            pb.println(format!("📊 {}: {}", style(stat).dim(), style(val).yellow()));
-                        }
-                    }
-                }
-                
-                // Show download progress or loading 
-                if trimmed.contains("downloading") {
-                    pb.set_message(format!("Downloading model partial over network..."));
-                    pb.tick();
-                } else if trimmed.contains("llama_model_load") {
-                    pb.set_message("Loading buffers into memory...");
-                    pb.tick();
-                } else if trimmed.contains("ggml_") {
-                    pb.set_message("Processing architecture layers...");
-                    pb.tick();
-                } else if trimmed.contains("llama_kv_cache_init:") {
-                    pb.set_message("Calculating KV cache memory blocks...");
-                } else if !trimmed.is_empty() {
-                    pb.set_message(format!("Status: {:?}", trimmed.chars().take(40).collect::<String>()));
-                    pb.tick();
-                }
-            }
-            Err(_) => break,
+    tokio::select! {
+        _ = child.wait() => {}
+        _ = tokio::signal::ctrl_c() => {
+            let _ = child.kill().await;
         }
     }
 
-    tokio::spawn(async move {
-        loop {
-            line.clear();
-            if let Ok(bytes) = reader.read_line(&mut line).await {
-                if bytes == 0 { break; }
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && trimmed.contains("llama_print_timings") {
-                    println!("ℹ️ {}", style(trimmed).dim());
-                }
-            } else {
-                break;
-            }
-        }
-    });
-
-    // Wait until user stops watching the logs implicitly by killing status command
-    tokio::signal::ctrl_c().await?;
-
-    // the status command drops, child is implicitly aborted locally, but Docker process itself remains attached independently inside the host daemon
     Ok(())
 }
 
@@ -220,9 +222,54 @@ pub async fn stop_server() -> Result<()> {
 
     if status.status.success() {
         println!("{} {}", style("✓").green().bold(), style("Server stopped successfully.").green());
-    } else {
-        println!("{} {}", style("ℹ").cyan().bold(), style("No running server found.").dim());
     }
     
     Ok(())
+}
+
+// Ensure the helper grouping heuristic is standalone so we can cleanly test it
+pub fn is_autocomplete_model(model_name: &str) -> bool {
+    let lower = model_name.to_lowercase();
+    lower.contains("mini") || 
+    lower.contains("coder") || 
+    lower.contains("1.5b") || 
+    lower.contains("2b") ||
+    lower.contains("0.5b")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_extract_hf_repo_and_file_static() {
+        let (repo, file) = extract_hf_repo_and_file("phi3-mini", &None).await;
+        assert_eq!(repo, "");
+        assert_eq!(file, Some("https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_hf_repo_and_file_dynamic() {
+        let quant = Some("Q4_K_M".to_string());
+        // Dynamic llmfit model case
+        let (repo, file) = extract_hf_repo_and_file("author/llama3-8b-instruct", &quant).await;
+        assert_eq!(repo, "bartowski/llama3-8b-instruct-GGUF");
+        assert_eq!(file, Some("llama3-8b-instruct-Q4_K_M.gguf".to_string()));
+
+        // Edge case: single name passed incorrectly
+        let (repo2, file2) = extract_hf_repo_and_file("some-custom-model", &quant).await;
+        assert_eq!(repo2, "bartowski/some-custom-model-GGUF");
+        assert_eq!(file2, Some("some-custom-model-Q4_K_M.gguf".to_string()));
+    }
+
+    #[test]
+    fn test_is_autocomplete_model() {
+        assert!(is_autocomplete_model("phi3-mini"));
+        assert!(is_autocomplete_model("qwen2.5-coder-1.5b-instruct"));
+        assert!(is_autocomplete_model("gemma-2b-it"));
+        assert!(is_autocomplete_model("some-0.5b-model"));
+        assert!(!is_autocomplete_model("llama3-8b-instruct"));
+        assert!(!is_autocomplete_model("mixtral-8x7b-instruct"));
+        assert!(!is_autocomplete_model("llama3-70b-instruct"));
+    }
 }

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "llm": {
+    "api_base": "http://localhost:8080/v1",
+    "model": "llama3-8b-instruct",
+    "provider": "custom"
+  },
+  "permission": {
+    "bash": "ask",
+    "edit": "ask",
+    "webfetch": "ask"
+  }
+}

@@ -1,12 +1,17 @@
 use anyhow::Result;
-use inquire::{Confirm, Select};
+use inquire::Confirm;
 use crate::profiling::HardwareProfile;
 use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ModelSelection {
+    pub name: String,
+    pub quant: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SetupConfig {
-    pub model_name: String,
-    pub quant: Option<String>,
+    pub models: Vec<ModelSelection>,
     pub run_in_docker: bool,
     pub selected_skills: Vec<String>,
     pub models_dir: std::path::PathBuf,
@@ -29,9 +34,17 @@ const AVAILABLE_SKILLS: &[&str] = &[
 
 pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommended_model: &str) -> Result<SetupConfig> {
     if args.yes {
+        let models = if let Some(ref m_list) = args.models {
+            m_list.iter().map(|name| ModelSelection { name: name.clone(), quant: None }).collect()
+        } else {
+            vec![ModelSelection {
+                name: recommended_model.to_string(),
+                quant: profile.recommended_models.first().map(|m| m.best_quant.clone()),
+            }]
+        };
+
         return Ok(SetupConfig {
-            model_name: args.model.clone().unwrap_or_else(|| recommended_model.to_string()),
-            quant: profile.recommended_models.first().map(|m| m.best_quant.clone()),
+            models,
             run_in_docker: !args.no_docker,
             selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
             models_dir: args.models_dir.clone().unwrap_or_else(|| {
@@ -42,62 +55,48 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
         });
     }
 
-    let default_choice = args.model.as_deref().unwrap_or(recommended_model);
+    let default_choice = args.models.as_ref().and_then(|m| m.first()).map(|s| s.as_str()).unwrap_or(recommended_model);
     
-    let mut top_options = Vec::new();
     let is_dynamic = !profile.recommended_models.is_empty();
     
-    if is_dynamic {
-        for m in profile.recommended_models.iter().take(5) {
-            top_options.push(format!("{} (Score: {}, Quant: {})", m.name, m.score, m.best_quant));
-        }
+    let all_options: Vec<String> = if is_dynamic {
+        profile.recommended_models.iter()
+            .map(|m| format!("{} (Score: {}, Quant: {})", m.name, m.score, m.best_quant)).collect()
     } else {
-        top_options = AVAILABLE_MODELS.iter().take(5).map(|s| s.to_string()).collect();
-        if !top_options.contains(&default_choice.to_string()) {
-            if top_options.len() >= 5 {
-                top_options.pop();
-            }
-            top_options.insert(0, default_choice.to_string());
-        }
-    }
-    
-    let view_all_option = "View all models...".to_string();
-    top_options.push(view_all_option.clone());
-    
-    // Attempt to guess cursor if we match a substring
-    let starting_cursor = top_options.iter().position(|x| x.contains(default_choice)).unwrap_or(0);
+        AVAILABLE_MODELS.iter().map(|&s| s.to_string()).collect()
+    };
 
-    let mut selected_option = Select::new("Which model would you like to use?", top_options)
-        .with_starting_cursor(starting_cursor)
-        .with_help_message("Use up/down arrows to scroll. Type to filter options.")
+    let mut default_indices = Vec::new();
+    if let Some(idx) = all_options.iter().position(|x| x.contains(default_choice)) {
+        default_indices.push(idx);
+    }
+
+    let selected_options = inquire::MultiSelect::new("Which models would you like to install and use?", all_options)
+        .with_default(&default_indices)
+        .with_help_message("Use Space to select/deselect, Enter to confirm. Type to filter.")
+        .with_page_size(10)
         .prompt()?;
 
-    if selected_option == view_all_option {
-        if is_dynamic {
-            let all_options: Vec<String> = profile.recommended_models.iter()
-                .map(|m| format!("{} (Score: {}, Quant: {})", m.name, m.score, m.best_quant)).collect();
-            selected_option = Select::new("Select from all recommended models:", all_options)
-                .with_page_size(10)
-                .prompt()?;
-        } else {
-            let all_options: Vec<String> = AVAILABLE_MODELS.iter().map(|s| s.to_string()).collect();
-            selected_option = Select::new("Select from all available models:", all_options)
-                .with_page_size(10)
-                .prompt()?;
-        }
+    if selected_options.is_empty() {
+        anyhow::bail!("You must select at least one model.");
     }
-    
-    // Parse out real model name and quant
-    let mut final_model = selected_option.clone();
-    let mut final_quant = None;
-    if is_dynamic {
-        // extract string before the first ' ('
-        if let Some(idx) = selected_option.find(" (") {
-            final_model = selected_option[..idx].to_string();
+
+    let mut selected_models = Vec::new();
+    for opt in selected_options {
+        let mut final_model = opt.clone();
+        let mut final_quant = None;
+        if is_dynamic {
+            if let Some(idx) = opt.find(" (") {
+                final_model = opt[..idx].to_string();
+            }
+            if let Some(model) = profile.recommended_models.iter().find(|m| m.name == final_model) {
+                final_quant = Some(model.best_quant.clone());
+            }
         }
-        if let Some(model) = profile.recommended_models.iter().find(|m| m.name == final_model) {
-            final_quant = Some(model.best_quant.clone());
-        }
+        selected_models.push(ModelSelection {
+            name: final_model,
+            quant: final_quant,
+        });
     }
 
     let run_in_docker = Confirm::new("Do you want to run this using llama.cpp via Docker?")
@@ -131,11 +130,49 @@ pub fn prompt_user(args: &crate::SetupArgs, profile: &HardwareProfile, recommend
         .prompt()?;
 
     Ok(SetupConfig { 
-        model_name: final_model, 
-        quant: final_quant,
+        models: selected_models, 
         run_in_docker,
         selected_skills,
         models_dir,
         port: args.port,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_selection_serialize() {
+        let selection = ModelSelection {
+            name: "test-model".to_string(),
+            quant: Some("Q4".to_string()),
+        };
+        let serialized = serde_json::to_string(&selection).unwrap();
+        assert!(serialized.contains("test-model"));
+        assert!(serialized.contains("Q4"));
+    }
+
+    #[test]
+    fn test_model_selection_deserialize() {
+        let json = r#"{"name":"phi3-mini","quant":null}"#;
+        let selection: ModelSelection = serde_json::from_str(json).unwrap();
+        assert_eq!(selection.name, "phi3-mini");
+        assert_eq!(selection.quant, None);
+    }
+
+    #[test]
+    fn test_setup_config_serialize() {
+        let config = SetupConfig {
+            models: vec![ModelSelection { name: "test".to_string(), quant: None }],
+            run_in_docker: true,
+            selected_skills: vec!["context7".to_string()],
+            models_dir: std::path::PathBuf::from("/tmp/models"),
+            port: 8080,
+        };
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(serialized.contains("run_in_docker"));
+        assert!(serialized.contains(r#""port":8080"#));
+        assert!(serialized.contains("context7"));
+    }
 }

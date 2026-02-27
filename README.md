@@ -1,85 +1,89 @@
 # LocalCode
 
-A standalone, blazing-fast CLI tool built in Rust to instantly give you a seamless "it just works" local LLM environment via Docker & `llama.cpp`. Stop fighting endless configuration scripts and Python dependencies, and get back to writing code.
-
-LocalCode checks your hardware profile, downloads optimal models by default, spins up a Docker container on-demand, and transparently connects OpenCode directly to it.
+LocalCode is a streamlined, command-line utility for dynamically launching and swapping open weights large language models (LLMs) via `llama-swap`. It acts as the backbone for OpenCode by abstracting away the hassle of managing container instances, finding specific weights, and setting correct proxy pointers for local AI capabilities.
 
 ## Key Features
 
-- **Zero-Config Setup**: One terminal command, and you're chatting with a local AI.
-- **Dependency-Free**: A single, pre-compiled Rust binary. No Node modules, no pip environments.
-- **Intelligent Hardware Profiling**: Automatically detects available VRAM and defaults to an appropriately-sized model (falling back all the way to `Phi-3-mini` if you have sparse resources).
-- **Interactive TUI**: Uses styling inspired by Claude Code to let you seamlessly confirm or override the setup.
-- **Docker-native `llama.cpp`**: Skips the pain of building `llama.cpp` natively by talking directly to the `ggml-org/llama.cpp` Docker image.
+- **Hardware Profiling:** Automatically detects your available system VRAM and RAM using `llmfit` to recommend models capable of running on your machine natively.
+- **Dynamic Swapping:** Utilizes `llama-swap` as a robust reverse proxy. You configure what `.gguf` files you want and dynamically switch models purely by requesting them. 
+- **Parallel Autocompletion Constraints:** Intelligent group detection ensures small, parameter-efficient completion models remain loaded parallel to active chat contexts, meaning zero load latency when asking your IDE for completions while chatting!
+- **Project-Level & Global Configuration:** Stores state either globally in `~/.config/localcode/localcode.json` or explicitly overrides properties by using `localcode init` so any models spawned inside a project have domain specific characteristics.
+
+---
 
 ## Tech Stack
 
-- **Language**: Rust
-- **CLI Framework**: Clap
-- **Interactive UI**: inquire
-- **Inference Ecosystem**: Docker + `llama.cpp`
+- **Language:** Rust
+- **Distribution Ecosystem:** Cargo / crates.io dependencies
+- **Inference Runtime Engine:** ggml-org/llama.cpp (via wrapper)
+- **Local Proxy Engine:** ghcr.io/mostlygeek/llama-swap 
+- **Model Downloads:** `hf-hub` native sync downloading interface
+
+---
 
 ## Prerequisites
 
-- **Docker Desktop / Daemon** (must be installed and running)
-- An operating system capable of running Rust binaries.
+- Standard `cargo` installation (part of the standard rustup configuration)
+- Docker Desktop or Podman installed on the OS supporting local volume mounting capability
+- Minimum 8 GB RAM (though 16 GB+ is recommended for optimal inference memory scaling)
+- If taking advantage of Nvidia Acceleration, you MUST install the NVIDIA Container Toolkit or enable WSL2 passthrough cleanly.
 
-*(Note: for GPU inference, ensure the Nvidia Container Toolkit is set up for Docker, otherwise it will run on CPU).*
+---
 
 ## Getting Started
 
-### 1. Build from Source
+### 1. Installation
+
+To configure and run localcode, simply compile the bin and execute the initial setup command anywhere.
 
 ```bash
-git clone https://github.com/your-username/localcode.git
-cd localcode
 cargo build --release
+cd target/release/
+./localcode setup
 ```
 
-### 2. Run LocalCode
+This guides you through hardware detection and model download choices.
+If you simply want to accept defaults without interactive prompts:
+```bash
+./localcode setup --yes -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
+```
 
-LocalCode includes an interactive prompt that will guide you through the process, confirm your hardware choices, and initialize the setup.
+### 2. Starting the Environment 
 
 ```bash
-./target/release/localcode
+# Deploys Llama-Swap pulling your chosen parameters cleanly!
+./localcode start
 ```
 
-### 3. CLI Arguments
+### 3. Monitoring Operation Logging
 
-If you wish to bypass the interactive UI or configure advanced settings like server port or custom models, you can use the built-in CLI flags:
+Once running as a background service container, monitor the active model being mapped to port memory in real time easily:
 
-| Flag | Description | Default |
-| --- | --- | --- |
-| `-y, --yes` | Skip interactive prompts and accept all defaults | `false` |
-| `-m, --model <MODEL>` | Specify the model identifier directly (e.g. `phi3-mini`) | `None` (auto-detected) |
-| `--no-docker` | Do not use Docker. Assumes `llama.cpp` is natively installed. | `false` |
-| `-p, --port <PORT>` | the port for the LLM API to bind to | `8080` |
-
-#### Examples
-
-**Start the recommended model with no prompts:**
 ```bash
-localcode -y
+# Attach terminal std/out directly
+./localcode status
+
+# To kill it safely when done:
+./localcode stop
 ```
 
-**Boot a lightweight model on port 9000:**
+---
+
+## Configuration
+
+If you'd like to adjust specific overrides or apply models on a per-project boundary, simply navigate inside your relevant project via the CLI.
+
 ```bash
-localcode -y -m "phi3-mini" -p 9000
+# This forces the generator to initialize a ./localcode.json properties mapping.
+./localcode init
 ```
 
-## Architecture
-
-The project contains the following flow:
-1. `src/main.rs`: Entrypoint. Parses options via `clap`.
-2. `src/profiling.rs`: Resolves mocked or real system hardware specs to identify VRAM thresholds.
-3. `src/ui.rs`: Drives the `inquire` interactive prompt, skipping if `--yes` was provided.
-4. `src/runner.rs`: Dispatches the Docker run command using the `--hf-file` mechanism of `llama.cpp`, mapping volumes and exposing ports automatically.
-5. `src/config.rs`: Modifies `~/.opencode/config.json` specifically to integrate the new server interface.
+The system will subsequently honor the local config overrides whenever you run `localcode start` from that directory!
 
 ## Troubleshooting
 
-### Error: `Docker is not running or not installed correctly`
-Make sure you have Docker correctly installed from [Docker's official site](https://docs.docker.com/get-docker/). If you are using Linux, verify that your user is added to the `docker` group or that the daemon is correctly active.
+### Q: GPU Fallback Prompt Displays `NVIDIA Container Toolkit not detected` on Docker Startup
+A: If Docker attempts to access GPU via `--gpus all` and it crashes, our runtime executor catches this anomaly safely. Ensure you've setup Windows WSL mapped drivers properly, otherwise LocalCode gracefully injects `--gpus 0` allowing basic operation CPU fallback processing!
 
-### Container starts but inference is dreadfully slow
-Docker will default to CPU inference if the `--gpus all` mapping fails to attach your hardware. Ensure you have installed the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and restarted the docker service.
+### Q: Download times out consistently on `cargo code start`
+A: The internal handler securely verifies HF parameters to download the matching file. Ensure no system firewall interferes with your Hugging Face HTTPS connection hooks!

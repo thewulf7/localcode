@@ -126,3 +126,49 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
         recommended_models,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_llmfit_json() {
+        let json = r#"{
+            "models": [
+                {
+                    "name": "llama3-8b-instruct",
+                    "score": 0.95,
+                    "best_quant": "Q4_K_M"
+                }
+            ],
+            "system": {
+                "total_ram_gb": 32.0,
+                "gpu_vram_gb": 8.0
+            }
+        }"#;
+
+        let parsed: LlmfitOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.system.total_ram_gb, 32.0);
+        assert_eq!(parsed.system.gpu_vram_gb, Some(8.0));
+        assert_eq!(parsed.models.len(), 1);
+        assert_eq!(parsed.models[0].name, "llama3-8b-instruct");
+        assert_eq!(parsed.models[0].score, 0.95);
+        assert_eq!(parsed.models[0].best_quant, "Q4_K_M");
+    }
+
+    #[test]
+    fn test_parse_llmfit_json_no_gpu() {
+        let json = r#"{
+            "models": [],
+            "system": {
+                "total_ram_gb": 16.0,
+                "gpu_vram_gb": null
+            }
+        }"#;
+
+        let parsed: LlmfitOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.system.total_ram_gb, 16.0);
+        assert_eq!(parsed.system.gpu_vram_gb, None);
+        assert!(parsed.models.is_empty());
+    }
+}

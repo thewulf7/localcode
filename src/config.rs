@@ -22,13 +22,18 @@ pub fn get_available_skills() -> Vec<String> {
     skills_vec
 }
 
-pub async fn configure_opencode(model_name: &str, provider_url: &str) -> Result<()> {
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let opencode_dir = home_dir.join(".opencode");
-    let config_path = opencode_dir.join("config.json");
+pub async fn configure_opencode(model_name: &str, provider_url: &str, is_project: bool) -> Result<()> {
+    let target_dir = if is_project {
+        PathBuf::from(".opencode")
+    } else {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home_dir.join(".opencode")
+    };
+    
+    let config_path = target_dir.join("config.json");
 
-    if !opencode_dir.exists() {
-        fs::create_dir_all(&opencode_dir).await?;
+    if !target_dir.exists() {
+        fs::create_dir_all(&target_dir).await?;
     }
 
     let mut config: serde_json::Value = if config_path.exists() {
@@ -54,13 +59,17 @@ pub async fn configure_opencode(model_name: &str, provider_url: &str) -> Result<
     Ok(())
 }
 
-pub async fn save_localcode_config(config: &SetupConfig) -> Result<()> {
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let opencode_dir = home_dir.join(".opencode");
-    let config_path = opencode_dir.join("localcode.json");
+pub async fn save_localcode_config(config: &SetupConfig, is_project: bool) -> Result<()> {
+    let target_dir = if is_project {
+        PathBuf::from(".")
+    } else {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home_dir.join(".config").join("localcode")
+    };
+    let config_path = target_dir.join("localcode.json");
 
-    if !opencode_dir.exists() {
-        fs::create_dir_all(&opencode_dir).await?;
+    if !target_dir.exists() {
+        fs::create_dir_all(&target_dir).await?;
     }
 
     fs::write(config_path, serde_json::to_string_pretty(config)?).await?;
@@ -68,12 +77,18 @@ pub async fn save_localcode_config(config: &SetupConfig) -> Result<()> {
 }
 
 pub async fn load_localcode_config() -> Result<SetupConfig> {
+    let local_path = PathBuf::from("localcode.json");
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let config_path = home_dir.join(".opencode").join("localcode.json");
+    let global_path = home_dir.join(".config").join("localcode").join("localcode.json");
 
-    if !config_path.exists() {
-        anyhow::bail!("Configuration not found. Please run `localcode setup` first.");
-    }
+    let config_path = if local_path.exists() {
+        println!("📂 Using project-scoped local configuration from ./localcode.json");
+        local_path
+    } else if global_path.exists() {
+        global_path
+    } else {
+        anyhow::bail!("Configuration not found. Please run `localcode setup` or `localcode init` first.");
+    };
 
     let content = fs::read_to_string(config_path).await?;
     let config: SetupConfig = serde_json::from_str(&content)?;
@@ -116,5 +131,18 @@ pub async fn download_initial_skills(selected_skills: &[String]) -> Result<()> {
     }
 
     println!("✅ Skills installed.");
+    println!("✅ Skills installed.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedded_skills_loader() {
+        let skills = get_available_skills();
+        // Just verify it doesn't crash and returns the context7 folder we know exists in our tree based on UI selection choices
+        assert!(skills.contains(&"context7".to_string()));
+    }
 }

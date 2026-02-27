@@ -1,0 +1,18 @@
+{
+  "models": [
+    {
+      "name": "llama3-8b-instruct",
+      "quant": null
+    },
+    {
+      "name": "qwen2.5-coder-1.5b-instruct",
+      "quant": null
+    }
+  ],
+  "run_in_docker": true,
+  "selected_skills": [
+    "context7"
+  ],
+  "models_dir": "C:\\Users\\admin\\.opencode\\models",
+  "port": 8080
+}
