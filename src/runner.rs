@@ -1,7 +1,6 @@
 use crate::ui::ModelSelection;
 use anyhow::{Context, Result};
 use hf_hub::api::sync::ApiBuilder;
-use std::process::Stdio;
 use tokio::process::Command;
 
 pub async fn extract_hf_repo_and_file(
@@ -112,7 +111,7 @@ pub async fn start_llama_swap_docker(
 
     // Attempt to forcefully remove any existing container with the same name to avoid conflicts
     let _ = Command::new("docker")
-        .args(&["rm", "-f", "opencode-llm"])
+        .args(["rm", "-f", "opencode-llm"])
         .output()
         .await;
 
@@ -247,7 +246,7 @@ pub async fn show_status() -> Result<()> {
 
     // We use `--tail 50` so we don't stream gigantic past histories immediately
     let mut child = Command::new("docker")
-        .args(&["logs", "-f", "--tail", "50", "opencode-llm"])
+        .args(["logs", "-f", "--tail", "50", "opencode-llm"])
         .spawn()?;
 
     tokio::select! {
@@ -269,7 +268,7 @@ pub async fn stop_server() -> Result<()> {
     );
 
     let status = Command::new("docker")
-        .args(&["rm", "-f", "opencode-llm"])
+        .args(["rm", "-f", "opencode-llm"])
         .output()
         .await?;
 
