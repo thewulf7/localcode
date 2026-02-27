@@ -133,15 +133,16 @@ pub async fn download_initial_skills(selected_skills: &[String]) -> Result<()> {
         };
 
         if selected_skills.iter().any(|s| s == skill_name)
-            && let Some(embedded_file) = SkillsAssets::get(path) {
-                let dest_path = skills_dir.join(path);
+            && let Some(embedded_file) = SkillsAssets::get(path)
+        {
+            let dest_path = skills_dir.join(path);
 
-                if let Some(parent) = dest_path.parent() {
-                    fs::create_dir_all(parent).await?;
-                }
-
-                fs::write(&dest_path, embedded_file.data).await?;
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent).await?;
             }
+
+            fs::write(&dest_path, embedded_file.data).await?;
+        }
     }
 
     println!("✅ Skills installed.");

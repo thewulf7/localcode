@@ -68,7 +68,9 @@ mod tests {
     #[tokio::test]
     async fn test_profile_hardware_returns_models() {
         // Run the hardware profiling, which uses llmfit_core underneath.
-        let profile = profile_hardware().await.expect("Failed to profile hardware");
+        let profile = profile_hardware()
+            .await
+            .expect("Failed to profile hardware");
 
         // Asserts
         assert!(profile.vram_gb >= 0.0);
