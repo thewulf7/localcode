@@ -2,7 +2,7 @@
 set -e
 
 # Default settings
-REPO="AlexsJones/localcode"
+REPO="thewulf7/localcode"
 BIN_NAME="localcode"
 INSTALL_DIR="/usr/local/bin"
 

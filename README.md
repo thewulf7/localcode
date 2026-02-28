@@ -1,89 +1,159 @@
-# LocalCode
+<div align="center">
+  <img src="https://raw.githubusercontent.com/thewulf7/localcode/master/assets/logo.png" alt="LocalCode Logo" width="200"/>
+  <h1>LocalCode</h1>
+  <p><strong>A streamlined, developer-first command-line utility for dynamically launching and swapping open-weights Large Language Models (LLMs).</strong></p>
 
-LocalCode is a streamlined, command-line utility for dynamically launching and swapping open weights large language models (LLMs) via `llama-swap`. It acts as the backbone for OpenCode by abstracting away the hassle of managing container instances, finding specific weights, and setting correct proxy pointers for local AI capabilities.
+  <p>LocalCode acts as the invisible intelligence backbone, abstracting away container management, hardware-based model selection, and memory constraints so you can focus on building.</p>
 
-## Key Features
-
-- **Hardware Profiling:** Automatically detects your available system VRAM and RAM using `llmfit` to recommend models capable of running on your machine natively.
-- **Dynamic Swapping:** Utilizes `llama-swap` as a robust reverse proxy. You configure what `.gguf` files you want and dynamically switch models purely by requesting them. 
-- **Parallel Autocompletion Constraints:** Intelligent group detection ensures small, parameter-efficient completion models remain loaded parallel to active chat contexts, meaning zero load latency when asking your IDE for completions while chatting!
-- **Project-Level & Global Configuration:** Stores state either globally in `~/.config/localcode/localcode.json` or explicitly overrides properties by using `localcode init` so any models spawned inside a project have domain specific characteristics.
-
----
-
-## Tech Stack
-
-- **Language:** Rust
-- **Distribution Ecosystem:** Cargo / crates.io dependencies
-- **Inference Runtime Engine:** ggml-org/llama.cpp (via wrapper)
-- **Local Proxy Engine:** ghcr.io/mostlygeek/llama-swap 
-- **Model Downloads:** `hf-hub` native sync downloading interface
+  <p>
+    <a href="https://github.com/thewulf7/localcode/actions"><img src="https://img.shields.io/github/actions/workflow/status/thewulf7/localcode/build.yml?branch=master" alt="Build Status"></a>
+    <a href="https://crates.io/crates/localcode"><img src="https://img.shields.io/crates/v/localcode.svg" alt="Crates.io"></a>
+    <a href="https://github.com/thewulf7/localcode/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  </p>
+</div>
 
 ---
 
-## Prerequisites
+## 🚀 Key Features
 
-- Standard `cargo` installation (part of the standard rustup configuration)
-- Docker Desktop or Podman installed on the OS supporting local volume mounting capability
-- Minimum 8 GB RAM (though 16 GB+ is recommended for optimal inference memory scaling)
-- If taking advantage of Nvidia Acceleration, you MUST install the NVIDIA Container Toolkit or enable WSL2 passthrough cleanly.
+*   **Intelligent Hardware Profiling:** Uses `llmfit-core` to auto-detect system RAM and VRAM capability, recommending the maximum context lengths and quantizations native to your machine. No more out-of-memory errors!
+*   **Dynamic Swapping:** Seamlessly switches models in and out of memory at the proxy layer using ghcr.io/mostlygeek/llama-swap. Request a different `.gguf` and watch it instantly swap.
+*   **Parallel Inference Constraints:** Explicitly designed for developer toolchains—groups small, low-latency code-completion models parallel to deeper reasoning chat models effectively.
+*   **Global & Project Contexts:** Store state globally or override properties explicitly across projects (`localcode init`).
+*   **One-Line Installation:** Install immediately with secure OS-specific scripts without requiring a Rust toolchain.
 
 ---
 
-## Getting Started
+## 🛠️ Prerequisites
+
+LocalCode runs via Containerization. You must have:
+
+*   **Docker Desktop** or **Podman** installed on the host OS.
+*   If utilizing Nvidia Acceleration on Windows, you must configure **WSL2 passthrough** and have the **NVIDIA Container Toolkit** correctly mapped.
+*   Minimum 8 GB RAM (16 GB+ is strongly recommended for practical inference scaling).
+
+---
+
+## ⚡ Getting Started
 
 ### 1. Installation
 
-To configure and run localcode, simply compile the bin and execute the initial setup command anywhere.
-
+**For Linux / macOS:**
 ```bash
-cargo build --release
-cd target/release/
-./localcode setup
+curl -sL https://raw.githubusercontent.com/thewulf7/localcode/master/install.sh | sh
 ```
 
-This guides you through hardware detection and model download choices.
-If you simply want to accept defaults without interactive prompts:
-```bash
-./localcode setup --yes -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
+**For Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/thewulf7/localcode/master/install.ps1 | iex
 ```
 
-### 2. Starting the Environment 
+*<small>Alternatively, if you have a Rust toolchain installed, you can build from source: `cargo install --git https://github.com/thewulf7/localcode.git`</small>*
+
+### 2. Initial Setup
+
+Configure your models and directories for the first time. LocalCode will guide you interactively, recommend the best weights, and download them automatically from Hugging Face:
 
 ```bash
-# Deploys Llama-Swap pulling your chosen parameters cleanly!
-./localcode start
+localcode setup
 ```
 
-### 3. Monitoring Operation Logging
+**Headless Setup (CI/CD / Automation):**
+You can also bypass the prompts by providing arguments directly:
+```bash
+localcode setup --yes -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
+```
 
-Once running as a background service container, monitor the active model being mapped to port memory in real time easily:
+### 3. Starting the Environment
+
+Deploys the reverse proxy mapping across Docker and orchestrates the weights:
 
 ```bash
-# Attach terminal std/out directly
-./localcode status
+localcode start
+```
 
-# To kill it safely when done:
-./localcode stop
+### 4. Verification and Shutdown
+
+Once running, verify the status or shut down the container gracefully:
+
+```bash
+# Check the container lifecycle and proxy mapping
+localcode status
+
+# Stop background services
+localcode stop
 ```
 
 ---
 
-## Configuration
+## 🏛️ Architecture
 
-If you'd like to adjust specific overrides or apply models on a per-project boundary, simply navigate inside your relevant project via the CLI.
+LocalCode is composed explicitly of highly predictable, independent components communicating via a local service mesh structure. 
 
-```bash
-# This forces the generator to initialize a ./localcode.json properties mapping.
-./localcode init
+### Directory Structure & Config Map
+The system uses the `~/.config/localcode/` directory (or OS equivalent) to maintain its global definition map. 
+
+```
+~/.config/localcode/
+ ├── localcode.json       # Central Configuration State
+ └── models/              # Downloaded HuggingFace GGUF Weights
 ```
 
-The system will subsequently honor the local config overrides whenever you run `localcode start` from that directory!
+*Note: You can override your model path explicitely using `localcode setup --models-dir /my/custom/path`.*
 
-## Troubleshooting
+### Request Lifecycle Flow
 
-### Q: GPU Fallback Prompt Displays `NVIDIA Container Toolkit not detected` on Docker Startup
-A: If Docker attempts to access GPU via `--gpus all` and it crashes, our runtime executor catches this anomaly safely. Ensure you've setup Windows WSL mapped drivers properly, otherwise LocalCode gracefully injects `--gpus 0` allowing basic operation CPU fallback processing!
+When an inference call is made from OpenCode (or any frontend), LocalCode abstracts the execution:
 
-### Q: Download times out consistently on `cargo code start`
-A: The internal handler securely verifies HF parameters to download the matching file. Ensure no system firewall interferes with your Hugging Face HTTPS connection hooks!
+```mermaid
+graph LR
+    A[Client / IDE Plugin] -->|OpenAI API Request /v1/chat/completions| B(Llama-Swap Proxy :8080)
+    B -->|Check Memory & Load Request| C[Llama.cpp Backend]
+    C -->|GGUF Binary Mapping| D[(Model Disk / ~/.config/localcode/models/)]
+    C -->|Execute Inference Task| B
+    B -->|Return JSON| A
+```
+
+1. **Proxy Intercept:** The reverse proxy `llama-swap` listens continuously. 
+2. **Context Resolution:** The proxy observes the requested model string in the payload.
+3. **Weight Loading:** If the specific `.gguf` is not in RAM/VRAM, the backend immediately purges the oldest inactive model and cycles the requested parameters into active memory.
+4. **Execution:** The inference runs cleanly across `llama.cpp`.
+
+---
+
+## 📝 Configuration (Project-Level Overrides)
+
+Need specific models locally configured just for one project boundary? You can initialize a discrete scope overriding the Global `.config`:
+
+Navigate to your target directory and run:
+
+```bash
+localcode init
+```
+
+This deposits a minimal `./localcode.json` map right in your codebase directory. The system will inherently respect this scope hierarchy the next time you invoke `localcode start` from that directory!
+
+---
+
+## 🆘 Troubleshooting
+
+### `NVIDIA Container Toolkit not detected`
+**Symptom:** During `localcode start`, Docker attempts to access the GPU (`--gpus all`) and the initialization crashes. 
+**Solution:** Ensure you've cleanly installed runtime configurations for Windows WSL mapped drivers. If GPU allocation is irreversibly misconfigured, LocalCode acts gracefully by catching the Docker API bounds error and injecting `--gpus 0`, enabling immediate **CPU fallback processing**.
+
+### Download Times Out Setting Up Models
+**Symptom:** `localcode setup` halts indefinitely while fetching GGUF weights.
+**Solution:** The internal handler syncs securely with Hugging Face Hub limits. Ensure your network doesn't possess SSL inspection hooks obstructing standard HTTPS payload transfers. You can safely abort (`Ctrl+C`) and retry `localcode setup`, and the internal downloader will gracefully resume the cached blob segments.
+
+---
+
+## 🤝 Contributing
+Contributions, issues, and feature requests are welcome!
+Feel free to check [issues page](https://github.com/thewulf7/localcode/issues).  
+
+When submitting PRs, ensure you adhere to the project's formatting by executing:
+```sh
+cargo clippy -- -D warnings
+cargo fmt --check
+cargo test
+```

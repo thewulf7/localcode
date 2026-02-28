@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Repo = "AlexsJones/localcode"
+$Repo = "thewulf7/localcode"
 $BinName = "localcode.exe"
 $InstallDir = "$env:USERPROFILE\.localcode\bin"
 
