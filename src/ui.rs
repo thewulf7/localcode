@@ -100,7 +100,12 @@ pub fn prompt_user(
         profile
             .recommended_models
             .iter()
-            .map(|m| format!("{} (Score: {:.1}, Quant: {})", m.name, m.score, m.best_quant))
+            .map(|m| {
+                format!(
+                    "{} (Score: {:.1}, Quant: {})",
+                    m.name, m.score, m.best_quant
+                )
+            })
             .collect()
     } else {
         AVAILABLE_MODELS.iter().map(|&s| s.to_string()).collect()

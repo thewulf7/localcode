@@ -73,7 +73,10 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
 
     let mut recommended_combos = Vec::new();
     let available_memory = if specs.has_gpu {
-        specs.total_gpu_vram_gb.or(specs.gpu_vram_gb).unwrap_or(specs.available_ram_gb)
+        specs
+            .total_gpu_vram_gb
+            .or(specs.gpu_vram_gb)
+            .unwrap_or(specs.available_ram_gb)
     } else {
         specs.available_ram_gb
     };
@@ -83,7 +86,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
             if std_fit.memory_required_gb + auto_fit.memory_required_gb <= available_memory {
                 let combo_name = format!("{} + {}", std_fit.model.name, auto_fit.model.name);
                 let score = (std_fit.score * 0.7) + (auto_fit.score * 0.3);
-                
+
                 recommended_combos.push(RecommendedCombo {
                     name: combo_name,
                     standard_model: RecommendedModel {
@@ -102,7 +105,11 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
         }
     }
 
-    recommended_combos.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    recommended_combos.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(HardwareProfile {
         vram_gb,
