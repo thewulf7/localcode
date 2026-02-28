@@ -23,7 +23,7 @@ pub fn get_available_skills() -> Vec<String> {
 }
 
 pub async fn configure_opencode(
-    model_name: &str,
+    models: &[crate::ui::ModelSelection],
     provider_url: &str,
     is_project: bool,
 ) -> Result<()> {
@@ -49,15 +49,39 @@ pub async fn configure_opencode(
         serde_json::from_str(template_content).unwrap_or_else(|_| serde_json::json!({}))
     };
 
+    let mut standard_model_name = "default".to_string();
+    let mut autocomplete_model_name = None;
+
+    for m in models {
+        if crate::runner::is_autocomplete_model(&m.name) {
+            if autocomplete_model_name.is_none() {
+                autocomplete_model_name = Some(m.name.clone());
+            }
+        } else if standard_model_name == "default" {
+            standard_model_name = m.name.clone();
+        }
+    }
+
     if let Some(obj) = config.as_object_mut() {
         obj.insert(
             "llm".to_string(),
             serde_json::json!({
                 "provider": "custom",
-                "model": model_name,
+                "model": standard_model_name,
                 "api_base": provider_url,
             }),
         );
+
+        if let Some(auto_name) = autocomplete_model_name {
+            obj.insert(
+                "tabAutocompleteModel".to_string(),
+                serde_json::json!({
+                    "provider": "custom",
+                    "model": auto_name,
+                    "api_base": provider_url,
+                }),
+            );
+        }
     }
 
     println!(

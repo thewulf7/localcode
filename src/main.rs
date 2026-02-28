@@ -160,12 +160,7 @@ async fn main() -> Result<()> {
 
             // 4. Configure OpenCode
             let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            let first_model_name = user_config
-                .models
-                .first()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| "default".to_string());
-            config::configure_opencode(&first_model_name, &provider_url, false).await?;
+            config::configure_opencode(&user_config.models, &provider_url, false).await?;
 
             // 5. Download default skills
             config::download_initial_skills(&user_config.selected_skills).await?;
@@ -207,14 +202,8 @@ async fn main() -> Result<()> {
             println!();
 
             let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            let first_model_name = user_config
-                .models
-                .first()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| "default".to_string());
-
             // Pass true to indicate project-scoped
-            config::configure_opencode(&first_model_name, &provider_url, true).await?;
+            config::configure_opencode(&user_config.models, &provider_url, true).await?;
             config::save_localcode_config(&user_config, true).await?;
 
             println!(

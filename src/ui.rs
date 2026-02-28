@@ -44,6 +44,18 @@ pub fn prompt_user(
                     quant: None,
                 })
                 .collect()
+        } else if !profile.recommended_combos.is_empty() {
+            let combo = profile.recommended_combos.first().unwrap();
+            vec![
+                ModelSelection {
+                    name: combo.standard_model.name.clone(),
+                    quant: Some(combo.standard_model.best_quant.clone()),
+                },
+                ModelSelection {
+                    name: combo.autocomplete_model.name.clone(),
+                    quant: Some(combo.autocomplete_model.best_quant.clone()),
+                },
+            ]
         } else {
             vec![ModelSelection {
                 name: recommended_model.to_string(),
@@ -76,12 +88,19 @@ pub fn prompt_user(
         .unwrap_or(recommended_model);
 
     let is_dynamic = !profile.recommended_models.is_empty();
+    let has_combos = !profile.recommended_combos.is_empty();
 
-    let all_options: Vec<String> = if is_dynamic {
+    let all_options: Vec<String> = if has_combos {
+        profile
+            .recommended_combos
+            .iter()
+            .map(|c| format!("{} (Score: {:.1})", c.name, c.score))
+            .collect()
+    } else if is_dynamic {
         profile
             .recommended_models
             .iter()
-            .map(|m| format!("{} (Score: {}, Quant: {})", m.name, m.score, m.best_quant))
+            .map(|m| format!("{} (Score: {:.1}, Quant: {})", m.name, m.score, m.best_quant))
             .collect()
     } else {
         AVAILABLE_MODELS.iter().map(|&s| s.to_string()).collect()
@@ -90,6 +109,8 @@ pub fn prompt_user(
     let mut default_indices = Vec::new();
     if let Some(idx) = all_options.iter().position(|x| x.contains(default_choice)) {
         default_indices.push(idx);
+    } else if !all_options.is_empty() {
+        default_indices.push(0);
     }
 
     let selected_options = inquire::MultiSelect::new(
@@ -102,29 +123,48 @@ pub fn prompt_user(
     .prompt()?;
 
     if selected_options.is_empty() {
-        anyhow::bail!("You must select at least one model.");
+        anyhow::bail!("You must select at least one option.");
     }
 
     let mut selected_models = Vec::new();
     for opt in selected_options {
-        let mut final_model = opt.clone();
-        let mut final_quant = None;
-        if is_dynamic {
-            if let Some(idx) = opt.find(" (") {
-                final_model = opt[..idx].to_string();
+        let mut final_name = opt.clone();
+        if let Some(idx) = opt.find(" (") {
+            final_name = opt[..idx].to_string();
+        }
+
+        if has_combos {
+            if let Some(combo) = profile
+                .recommended_combos
+                .iter()
+                .find(|c| c.name == final_name)
+            {
+                selected_models.push(ModelSelection {
+                    name: combo.standard_model.name.clone(),
+                    quant: Some(combo.standard_model.best_quant.clone()),
+                });
+                selected_models.push(ModelSelection {
+                    name: combo.autocomplete_model.name.clone(),
+                    quant: Some(combo.autocomplete_model.best_quant.clone()),
+                });
             }
+        } else if is_dynamic {
             if let Some(model) = profile
                 .recommended_models
                 .iter()
-                .find(|m| m.name == final_model)
+                .find(|m| m.name == final_name)
             {
-                final_quant = Some(model.best_quant.clone());
+                selected_models.push(ModelSelection {
+                    name: model.name.clone(),
+                    quant: Some(model.best_quant.clone()),
+                });
             }
+        } else {
+            selected_models.push(ModelSelection {
+                name: final_name,
+                quant: None,
+            });
         }
-        selected_models.push(ModelSelection {
-            name: final_model,
-            quant: final_quant,
-        });
     }
 
     let run_in_docker = Confirm::new("Do you want to run this using llama.cpp via Docker?")

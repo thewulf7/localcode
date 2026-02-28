@@ -6,6 +6,15 @@ pub struct HardwareProfile {
     #[allow(dead_code)]
     pub compute_capability: ComputeCapability,
     pub recommended_models: Vec<RecommendedModel>,
+    pub recommended_combos: Vec<RecommendedCombo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecommendedCombo {
+    pub name: String,
+    pub standard_model: RecommendedModel,
+    pub autocomplete_model: RecommendedModel,
+    pub score: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -45,19 +54,62 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
     let ranked = llmfit_core::fit::rank_models_by_fit(fits);
 
     let mut recommended_models = Vec::new();
-    for fit in ranked {
+    let mut standard_fits = Vec::new();
+    let mut autocomplete_fits = Vec::new();
+
+    for fit in &ranked {
         recommended_models.push(RecommendedModel {
             name: fit.model.name.clone(),
             score: fit.score as f32,
             best_quant: fit.best_quant.clone(),
         });
+
+        if crate::runner::is_autocomplete_model(&fit.model.name) {
+            autocomplete_fits.push(fit);
+        } else {
+            standard_fits.push(fit);
+        }
     }
+
+    let mut recommended_combos = Vec::new();
+    let available_memory = if specs.has_gpu {
+        specs.total_gpu_vram_gb.or(specs.gpu_vram_gb).unwrap_or(specs.available_ram_gb)
+    } else {
+        specs.available_ram_gb
+    };
+
+    for std_fit in &standard_fits {
+        for auto_fit in &autocomplete_fits {
+            if std_fit.memory_required_gb + auto_fit.memory_required_gb <= available_memory {
+                let combo_name = format!("{} + {}", std_fit.model.name, auto_fit.model.name);
+                let score = (std_fit.score * 0.7) + (auto_fit.score * 0.3);
+                
+                recommended_combos.push(RecommendedCombo {
+                    name: combo_name,
+                    standard_model: RecommendedModel {
+                        name: std_fit.model.name.clone(),
+                        score: std_fit.score as f32,
+                        best_quant: std_fit.best_quant.clone(),
+                    },
+                    autocomplete_model: RecommendedModel {
+                        name: auto_fit.model.name.clone(),
+                        score: auto_fit.score as f32,
+                        best_quant: auto_fit.best_quant.clone(),
+                    },
+                    score: score as f32,
+                });
+            }
+        }
+    }
+
+    recommended_combos.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
     Ok(HardwareProfile {
         vram_gb,
         ram_gb,
         compute_capability: ComputeCapability::Medium,
         recommended_models,
+        recommended_combos,
     })
 }
 
