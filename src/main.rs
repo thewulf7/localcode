@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
         }
         Commands::Upgrade => {
             println!("{}", style("Checking for updates...").dim());
-            
+
             let status = self_update::backends::github::Update::configure()
                 .repo_owner("thewulf7")
                 .repo_name("localcode")
@@ -179,12 +179,14 @@ async fn main() -> Result<()> {
 
             // 3. User Interaction
             println!();
-            let (user_config, is_project_scoped) = ui::prompt_user(&init_args, &profile, recommended_model)?;
+            let (user_config, is_project_scoped) =
+                ui::prompt_user(&init_args, &profile, recommended_model)?;
             println!();
 
             // 4. Configure OpenCode
             let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            config::configure_opencode(&user_config.models, &provider_url, is_project_scoped).await?;
+            config::configure_opencode(&user_config.models, &provider_url, is_project_scoped)
+                .await?;
 
             // 5. Download default skills
             if !is_project_scoped {
@@ -194,12 +196,19 @@ async fn main() -> Result<()> {
             // 6. Save configuration to disk
             config::save_localcode_config(&user_config, is_project_scoped).await?;
 
-            let scope_str = if is_project_scoped { "Local project" } else { "Global system" };
+            let scope_str = if is_project_scoped {
+                "Local project"
+            } else {
+                "Global system"
+            };
             println!(
                 "\n{}",
-                style(format!("🎉 Initialization Complete! {} configuration saved.", scope_str))
-                    .green()
-                    .bold()
+                style(format!(
+                    "🎉 Initialization Complete! {} configuration saved.",
+                    scope_str
+                ))
+                .green()
+                .bold()
             );
             println!(
                 "{} {}",

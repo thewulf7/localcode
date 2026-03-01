@@ -84,18 +84,21 @@ pub fn prompt_user(
             }]
         };
 
-        return Ok((InitConfig {
-            models,
-            run_in_docker: !args.no_docker,
-            selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
-            models_dir: args.models_dir.clone().unwrap_or_else(|| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".opencode")
-                    .join("models")
-            }),
-            port: args.port,
-        }, is_project_scoped));
+        return Ok((
+            InitConfig {
+                models,
+                run_in_docker: !args.no_docker,
+                selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
+                models_dir: args.models_dir.clone().unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join(".opencode")
+                        .join("models")
+                }),
+                port: args.port,
+            },
+            is_project_scoped,
+        ));
     }
 
     let default_choice = args
@@ -225,13 +228,16 @@ pub fn prompt_user(
     .with_help_message("Use Space to select/deselect, Enter to confirm.")
     .prompt()?;
 
-    Ok((InitConfig {
-        models: selected_models,
-        run_in_docker,
-        selected_skills,
-        models_dir,
-        port: args.port,
-    }, is_project_scoped))
+    Ok((
+        InitConfig {
+            models: selected_models,
+            run_in_docker,
+            selected_skills,
+            models_dir,
+            port: args.port,
+        },
+        is_project_scoped,
+    ))
 }
 
 #[cfg(test)]
