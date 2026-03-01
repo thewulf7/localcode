@@ -17,8 +17,9 @@
 ## 🚀 Key Features
 
 *   **Intelligent Hardware Profiling:** Uses `llmfit-core` to auto-detect system RAM and VRAM capability, recommending the maximum context lengths and quantizations native to your machine. No more out-of-memory errors!
+*   **Dual Model Combos:** Automatically suggests ideal combinations of large reasoning models alongside lightning-fast **autocomplete models** based strictly on your available VRAM footprint.
 *   **Dynamic Swapping:** Seamlessly switches models in and out of memory at the proxy layer using ghcr.io/mostlygeek/llama-swap. Request a different `.gguf` and watch it instantly swap.
-*   **Parallel Inference Constraints:** Explicitly designed for developer toolchains—groups small, low-latency code-completion models parallel to deeper reasoning chat models effectively.
+*   **Zero Port Conflicts:** Both your heavy chat model and your instantaneous autocomplete model run on the *exact same port* (`8080`). The proxy handles the routing natively.
 *   **Global & Project Contexts:** Store state globally or override properties explicitly across projects (`localcode init`).
 *   **One-Line Installation:** Install immediately with secure OS-specific scripts without requiring a Rust toolchain.
 
@@ -57,6 +58,7 @@ Configure your models and directories for the first time. LocalCode will guide y
 ```bash
 localcode setup
 ```
+*(During setup, if your hardware supports it, LocalCode will suggest **Combo Models**! This automatically spins up logic to allocate `llm` and `tabAutocompleteModel` targets beautifully for OpenCode.)*
 
 **Headless Setup (CI/CD / Automation):**
 You can also bypass the prompts by providing arguments directly:
