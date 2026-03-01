@@ -6,6 +6,7 @@ mod ui;
 use anyhow::Result;
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use console::style;
+use self_update::cargo_crate_version;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "LocalCode - OpenCode Local LLM Setup", long_about = None)]
@@ -16,10 +17,10 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Perform initial setup and model selection for the global environment
-    Setup(SetupArgs),
-    /// Initialize a project-scoped configuration in the current directory
-    Init(SetupArgs),
+    /// Initialize configuration for LocalCode (defaults to local project, use --global for system-wide)
+    Init(InitArgs),
+    /// Starts the localcode update engine to fetch the newest github release
+    Upgrade,
     /// Start the background LLM server using saved configuration
     Start,
     /// Show the real-time loading status of the background model
@@ -29,10 +30,14 @@ pub enum Commands {
 }
 
 #[derive(ClapArgs, Debug)]
-pub struct SetupArgs {
+pub struct InitArgs {
     /// Skip interactive prompts and accept defaults/arguments
     #[arg(short, long, default_value_t = false)]
     pub yes: bool,
+
+    /// Set configuration globally in ~/.config/localcode instead of current directory
+    #[arg(long, default_value_t = false)]
+    pub global: bool,
 
     /// Specify the models to use directly (e.g. llama3-8b-instruct)
     #[arg(short, long)]
@@ -124,10 +129,29 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Commands::Setup(setup_args) => {
+        Commands::Upgrade => {
+            println!("{}", style("Checking for updates...").dim());
+            
+            let status = self_update::backends::github::Update::configure()
+                .repo_owner("thewulf7")
+                .repo_name("localcode")
+                .bin_name("localcode")
+                .show_download_progress(true)
+                .current_version(cargo_crate_version!())
+                .build()
+                .unwrap()
+                .update()?;
+
+            println!(
+                "{} {}",
+                style("Update status:").green().bold(),
+                status.version()
+            );
+        }
+        Commands::Init(init_args) => {
             println!(
                 "\n{}\n",
-                style("✨ Welcome to OpenCode Global Setup! ✨")
+                style("✨ Initialize LocalCode Environment ✨")
                     .cyan()
                     .bold()
             );
@@ -155,22 +179,25 @@ async fn main() -> Result<()> {
 
             // 3. User Interaction
             println!();
-            let user_config = ui::prompt_user(&setup_args, &profile, recommended_model)?;
+            let (user_config, is_project_scoped) = ui::prompt_user(&init_args, &profile, recommended_model)?;
             println!();
 
             // 4. Configure OpenCode
             let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            config::configure_opencode(&user_config.models, &provider_url, false).await?;
+            config::configure_opencode(&user_config.models, &provider_url, is_project_scoped).await?;
 
             // 5. Download default skills
-            config::download_initial_skills(&user_config.selected_skills).await?;
+            if !is_project_scoped {
+                config::download_initial_skills(&user_config.selected_skills).await?;
+            }
 
             // 6. Save configuration to disk
-            config::save_localcode_config(&user_config, false).await?;
+            config::save_localcode_config(&user_config, is_project_scoped).await?;
 
+            let scope_str = if is_project_scoped { "Local project" } else { "Global system" };
             println!(
                 "\n{}",
-                style("🎉 Setup Complete! Global configuration saved.")
+                style(format!("🎉 Initialization Complete! {} configuration saved.", scope_str))
                     .green()
                     .bold()
             );
@@ -178,44 +205,6 @@ async fn main() -> Result<()> {
                 "{} {}",
                 style("➜").cyan(),
                 style("Run `localcode start` to boot up the LLM server!")
-                    .white()
-                    .bold()
-            );
-        }
-        Commands::Init(setup_args) => {
-            println!(
-                "\n{}\n",
-                style("✨ Initializing OpenCode Project Configuration ✨")
-                    .cyan()
-                    .bold()
-            );
-
-            let profile = profiling::profile_hardware().await?;
-            let recommended_model = match profile.vram_gb {
-                v if v >= 24.0 => "llama3-70b-instruct",
-                v if v >= 16.0 => "mixtral-8x7b-instruct",
-                v if v >= 8.0 => "llama3-8b-instruct",
-                _ => "phi3-mini",
-            };
-
-            let user_config = ui::prompt_user(&setup_args, &profile, recommended_model)?;
-            println!();
-
-            let provider_url = format!("http://localhost:{}/v1", user_config.port);
-            // Pass true to indicate project-scoped
-            config::configure_opencode(&user_config.models, &provider_url, true).await?;
-            config::save_localcode_config(&user_config, true).await?;
-
-            println!(
-                "\n{}",
-                style("🎉 Project Initialization Complete! Local project configuration saved.")
-                    .green()
-                    .bold()
-            );
-            println!(
-                "{} {}",
-                style("➜").cyan(),
-                style("Run `localcode start` to boot up the scoped LLM server!")
                     .white()
                     .bold()
             );

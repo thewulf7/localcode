@@ -56,14 +56,14 @@ irm https://raw.githubusercontent.com/thewulf7/localcode/master/install.ps1 | ie
 Configure your models and directories for the first time. LocalCode will guide you interactively, recommend the best weights, and download them automatically from Hugging Face:
 
 ```bash
-localcode setup
+localcode init
 ```
 *(During setup, if your hardware supports it, LocalCode will suggest **Combo Models**! This automatically spins up logic to allocate `llm` and `tabAutocompleteModel` targets beautifully for OpenCode.)*
 
 **Headless Setup (CI/CD / Automation):**
 You can also bypass the prompts by providing arguments directly:
 ```bash
-localcode setup --yes -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
+localcode init --yes -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
 ```
 
 ### 3. Starting the Environment
@@ -86,6 +86,13 @@ localcode status
 localcode stop
 ```
 
+### 5. Maintaining LocalCode
+LocalCode can seamlessly update itself from the GitHub releases repository without requiring package managers.
+
+```bash
+localcode upgrade
+```
+
 ---
 
 ## 🏛️ Architecture
@@ -101,7 +108,7 @@ The system uses the `~/.config/localcode/` directory (or OS equivalent) to maint
  └── models/              # Downloaded HuggingFace GGUF Weights
 ```
 
-*Note: You can override your model path explicitely using `localcode setup --models-dir /my/custom/path`.*
+*Note: You can override your model path explicitely using `localcode init --models-dir /my/custom/path`.*
 
 ### Request Lifecycle Flow
 
@@ -125,12 +132,12 @@ graph LR
 
 ## 📝 Configuration (Project-Level Overrides)
 
-Need specific models locally configured just for one project boundary? You can initialize a discrete scope overriding the Global `.config`:
+Need specific models locally configured just for one project boundary? You can initialize a discrete scope overriding the Global `.config` logic. The `localcode init` command will interactively probe you whether to save the configuration `Globally` or `Locally`. 
 
-Navigate to your target directory and run:
+If you prefer to bypass the prompts inside a local repository target, just run:
 
 ```bash
-localcode init
+localcode init --local
 ```
 
 This deposits a minimal `./localcode.json` map right in your codebase directory. The system will inherently respect this scope hierarchy the next time you invoke `localcode start` from that directory!
@@ -144,8 +151,8 @@ This deposits a minimal `./localcode.json` map right in your codebase directory.
 **Solution:** Ensure you've cleanly installed runtime configurations for Windows WSL mapped drivers. If GPU allocation is irreversibly misconfigured, LocalCode acts gracefully by catching the Docker API bounds error and injecting `--gpus 0`, enabling immediate **CPU fallback processing**.
 
 ### Download Times Out Setting Up Models
-**Symptom:** `localcode setup` halts indefinitely while fetching GGUF weights.
-**Solution:** The internal handler syncs securely with Hugging Face Hub limits. Ensure your network doesn't possess SSL inspection hooks obstructing standard HTTPS payload transfers. You can safely abort (`Ctrl+C`) and retry `localcode setup`, and the internal downloader will gracefully resume the cached blob segments.
+**Symptom:** `localcode init` halts indefinitely while fetching GGUF weights.
+**Solution:** The internal handler syncs securely with Hugging Face Hub limits. Ensure your network doesn't possess SSL inspection hooks obstructing standard HTTPS payload transfers. You can safely abort (`Ctrl+C`) and retry `localcode init`, and the internal downloader will gracefully resume the cached blob segments.
 
 ---
 

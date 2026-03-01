@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::ui::SetupConfig;
+use crate::ui::InitConfig;
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
@@ -93,7 +93,7 @@ pub async fn configure_opencode(
     Ok(())
 }
 
-pub async fn save_localcode_config(config: &SetupConfig, is_project: bool) -> Result<()> {
+pub async fn save_localcode_config(config: &crate::ui::InitConfig, is_project: bool) -> Result<()> {
     let target_dir = if is_project {
         PathBuf::from(".")
     } else {
@@ -110,27 +110,20 @@ pub async fn save_localcode_config(config: &SetupConfig, is_project: bool) -> Re
     Ok(())
 }
 
-pub async fn load_localcode_config() -> Result<SetupConfig> {
-    let local_path = PathBuf::from("localcode.json");
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let global_path = home_dir
-        .join(".config")
-        .join("localcode")
-        .join("localcode.json");
+pub async fn load_localcode_config() -> Result<crate::ui::InitConfig> {
+    let mut config_path = PathBuf::from("localcode.json");
 
-    let config_path = if local_path.exists() {
-        println!("📂 Using project-scoped local configuration from ./localcode.json");
-        local_path
-    } else if global_path.exists() {
-        global_path
-    } else {
-        anyhow::bail!(
-            "Configuration not found. Please run `localcode setup` or `localcode init` first."
-        );
-    };
+    if !config_path.exists() {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        config_path = home_dir.join(".config").join("localcode").join("localcode.json");
+    }
 
-    let content = fs::read_to_string(config_path).await?;
-    let config: SetupConfig = serde_json::from_str(&content)?;
+    if !config_path.exists() {
+        anyhow::bail!("Global configuration not found. Please run `localcode init` first.");
+    }
+
+    let config_content = fs::read_to_string(config_path).await?;
+    let config: crate::ui::InitConfig = serde_json::from_str(&config_content)?;
     Ok(config)
 }
 

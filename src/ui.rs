@@ -10,7 +10,7 @@ pub struct ModelSelection {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct SetupConfig {
+pub struct InitConfig {
     pub models: Vec<ModelSelection>,
     pub run_in_docker: bool,
     pub selected_skills: Vec<String>,
@@ -31,10 +31,28 @@ const AVAILABLE_MODELS: &[&str] = &[
 const AVAILABLE_SKILLS: &[&str] = &["context7"];
 
 pub fn prompt_user(
-    args: &crate::SetupArgs,
+    args: &crate::InitArgs,
     profile: &HardwareProfile,
     recommended_model: &str,
-) -> Result<SetupConfig> {
+) -> Result<(InitConfig, bool)> {
+    let is_project_scoped = if args.yes {
+        !args.global
+    } else {
+        if args.global {
+            false
+        } else {
+            let scope_choice = inquire::Select::new(
+                "Where would you like to save this configuration?",
+                vec![
+                    "Locally (Current project directory only)",
+                    "Globally (~/.config/localcode/)",
+                ],
+            )
+            .prompt()?;
+            scope_choice.starts_with("Locally")
+        }
+    };
+
     if args.yes {
         let models = if let Some(ref m_list) = args.models {
             m_list
@@ -66,7 +84,7 @@ pub fn prompt_user(
             }]
         };
 
-        return Ok(SetupConfig {
+        return Ok((InitConfig {
             models,
             run_in_docker: !args.no_docker,
             selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
@@ -77,7 +95,7 @@ pub fn prompt_user(
                     .join("models")
             }),
             port: args.port,
-        });
+        }, is_project_scoped));
     }
 
     let default_choice = args
@@ -207,13 +225,13 @@ pub fn prompt_user(
     .with_help_message("Use Space to select/deselect, Enter to confirm.")
     .prompt()?;
 
-    Ok(SetupConfig {
+    Ok((InitConfig {
         models: selected_models,
         run_in_docker,
         selected_skills,
         models_dir,
         port: args.port,
-    })
+    }, is_project_scoped))
 }
 
 #[cfg(test)]
@@ -240,8 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_config_serialize() {
-        let config = SetupConfig {
+    fn test_init_config_serialize() {
+        let config = InitConfig {
             models: vec![ModelSelection {
                 name: "test".to_string(),
                 quant: None,
