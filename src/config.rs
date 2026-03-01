@@ -115,7 +115,10 @@ pub async fn load_localcode_config() -> Result<crate::ui::InitConfig> {
 
     if !config_path.exists() {
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_path = home_dir.join(".config").join("localcode").join("localcode.json");
+        config_path = home_dir
+            .join(".config")
+            .join("localcode")
+            .join("localcode.json");
     }
 
     if !config_path.exists() {
