@@ -53,3 +53,69 @@ jobs:
       with:
         name: localcode-ubuntu
         path: target/release/localcode
+
+  release:
+    name: Release to GitHub
+    needs: build_and_test
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Download Windows Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: localcode-windows
+        path: artifacts/
+
+    - name: Download Ubuntu Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: localcode-ubuntu
+        path: artifacts/
+        
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Bump Version
+      id: bump
+      run: |
+        # Use cargo-edit to safely bump patch version
+        cargo install cargo-edit
+        cargo set-version --bump patch
+        NEW_VERSION=$(grep "^version" Cargo.toml | head -1 | awk -F '"' '{print $2}')
+        echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        
+    - name: Commit and Tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        git add Cargo.toml Cargo.lock
+        git commit -m "chore: release v${{ steps.bump.outputs.version }} [skip ci]"
+        git push
+        
+        git tag "v${{ steps.bump.outputs.version }}"
+        git push origin "v${{ steps.bump.outputs.version }}"
+        
+    - name: Prepare Assets
+      run: |
+        # Rename assets for clarity in the release page
+        mv artifacts/localcode.exe artifacts/localcode-windows.exe
+        mv artifacts/localcode artifacts/localcode-ubuntu
+        chmod +x artifacts/localcode-ubuntu
+        
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create "v${{ steps.bump.outputs.version }}" \
+          --title "Release v${{ steps.bump.outputs.version }}" \
+          --generate-notes \
+          artifacts/localcode-windows.exe \
+          artifacts/localcode-ubuntu
