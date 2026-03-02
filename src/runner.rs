@@ -92,6 +92,7 @@ pub async fn start_llama_swap_docker(
     models: &[ModelSelection],
     models_dir: &std::path::Path,
     port: u16,
+    llama_server_args: Option<&crate::ui::LlamaServerArgs>,
 ) -> Result<()> {
     println!("📦 Pulling ghcr.io/mostlygeek/llama-swap:cuda... (This may take a moment)");
 
@@ -142,9 +143,13 @@ pub async fn start_llama_swap_docker(
             String::new()
         };
 
+        let custom_args = llama_server_args
+            .map(|a| a.to_cli_args())
+            .unwrap_or_else(|| "--ctx-size 8192".to_string());
+
         yaml_content.push_str(&format!(
-            "    cmd: llama-server --port ${{PORT}} {} {} --host 0.0.0.0 --ctx-size 8192\n",
-            repo_arg, file_arg
+            "    cmd: llama-server --port ${{PORT}} {} {} --host 0.0.0.0 {}\n",
+            repo_arg, file_arg, custom_args
         ));
     }
 

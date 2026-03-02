@@ -98,9 +98,13 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
 
-                if let Err(e) =
-                    runner::start_llama_swap_docker(&config.models, &config.models_dir, config.port)
-                        .await
+                if let Err(e) = runner::start_llama_swap_docker(
+                    &config.models,
+                    &config.models_dir,
+                    config.port,
+                    config.llama_server_args.as_ref(),
+                )
+                .await
                 {
                     println!(
                         "\n{} {}",

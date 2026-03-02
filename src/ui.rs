@@ -9,6 +9,45 @@ pub struct ModelSelection {
     pub quant: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LlamaServerArgs {
+    pub ctx_size: u32,
+    pub n_gpu_layers: i32,
+    pub flash_attn: bool,
+    pub cache_type_k: String,
+    pub cache_type_v: String,
+}
+
+impl LlamaServerArgs {
+    pub fn from_hardware(profile: &HardwareProfile) -> Self {
+        let has_gpu = profile.vram_gb >= 1.0;
+        let high_vram = profile.vram_gb >= 8.0;
+
+        LlamaServerArgs {
+            ctx_size: if high_vram { 4096 } else { 2048 },
+            n_gpu_layers: if has_gpu { 999 } else { 0 },
+            flash_attn: has_gpu,
+            cache_type_k: if has_gpu { "q8_0" } else { "f16" }.to_string(),
+            cache_type_v: if has_gpu { "q8_0" } else { "f16" }.to_string(),
+        }
+    }
+
+    pub fn to_cli_args(&self) -> String {
+        let mut args = format!(
+            "--ctx-size {} --n-gpu-layers {}",
+            self.ctx_size, self.n_gpu_layers
+        );
+        if self.flash_attn {
+            args.push_str(" --flash-attn");
+        }
+        args.push_str(&format!(
+            " --cache-type-k {} --cache-type-v {}",
+            self.cache_type_k, self.cache_type_v
+        ));
+        args
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InitConfig {
     pub models: Vec<ModelSelection>,
@@ -16,6 +55,8 @@ pub struct InitConfig {
     pub selected_skills: Vec<String>,
     pub models_dir: std::path::PathBuf,
     pub port: u16,
+    #[serde(default)]
+    pub llama_server_args: Option<LlamaServerArgs>,
 }
 
 const AVAILABLE_MODELS: &[&str] = &[
@@ -94,6 +135,7 @@ pub fn prompt_user(
                         .join("models")
                 }),
                 port: args.port,
+                llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
             },
             is_project_scoped,
         ));
@@ -233,6 +275,7 @@ pub fn prompt_user(
             selected_skills,
             models_dir,
             port: args.port,
+            llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
         },
         is_project_scoped,
     ))
@@ -272,10 +315,43 @@ mod tests {
             selected_skills: vec!["context7".to_string()],
             models_dir: std::path::PathBuf::from("/tmp/models"),
             port: 8080,
+            llama_server_args: None,
         };
         let serialized = serde_json::to_string(&config).unwrap();
         assert!(serialized.contains("run_in_docker"));
         assert!(serialized.contains(r#""port":8080"#));
         assert!(serialized.contains("context7"));
+    }
+
+    #[test]
+    fn test_llama_server_args_to_cli_gpu() {
+        let args = LlamaServerArgs {
+            ctx_size: 4096,
+            n_gpu_layers: 999,
+            flash_attn: true,
+            cache_type_k: "q8_0".to_string(),
+            cache_type_v: "q8_0".to_string(),
+        };
+        let cli = args.to_cli_args();
+        assert!(cli.contains("--ctx-size 4096"));
+        assert!(cli.contains("--n-gpu-layers 999"));
+        assert!(cli.contains("--flash-attn"));
+        assert!(cli.contains("--cache-type-k q8_0"));
+    }
+
+    #[test]
+    fn test_llama_server_args_to_cli_cpu() {
+        let args = LlamaServerArgs {
+            ctx_size: 2048,
+            n_gpu_layers: 0,
+            flash_attn: false,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+        };
+        let cli = args.to_cli_args();
+        assert!(cli.contains("--ctx-size 2048"));
+        assert!(cli.contains("--n-gpu-layers 0"));
+        assert!(!cli.contains("--flash-attn"));
+        assert!(cli.contains("--cache-type-k f16"));
     }
 }
