@@ -37,20 +37,18 @@ pub fn prompt_user(
 ) -> Result<(InitConfig, bool)> {
     let is_project_scoped = if args.yes {
         !args.global
+    } else if args.global {
+        false
     } else {
-        if args.global {
-            false
-        } else {
-            let scope_choice = inquire::Select::new(
-                "Where would you like to save this configuration?",
-                vec![
-                    "Locally (Current project directory only)",
-                    "Globally (~/.config/localcode/)",
-                ],
-            )
-            .prompt()?;
-            scope_choice.starts_with("Locally")
-        }
+        let scope_choice = inquire::Select::new(
+            "Where would you like to save this configuration?",
+            vec![
+                "Locally (Current project directory only)",
+                "Globally (~/.config/localcode/)",
+            ],
+        )
+        .prompt()?;
+        scope_choice.starts_with("Locally")
     };
 
     if args.yes {

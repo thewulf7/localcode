@@ -2,7 +2,6 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::ui::InitConfig;
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
