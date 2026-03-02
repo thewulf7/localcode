@@ -2,6 +2,7 @@ use crate::profiling::HardwareProfile;
 use anyhow::Result;
 use inquire::Confirm;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ModelSelection {
@@ -16,6 +17,8 @@ pub struct LlamaServerArgs {
     pub flash_attn: bool,
     pub cache_type_k: String,
     pub cache_type_v: String,
+    #[serde(flatten)]
+    pub extra_args: HashMap<String, serde_json::Value>,
 }
 
 impl LlamaServerArgs {
@@ -23,12 +26,23 @@ impl LlamaServerArgs {
         let has_gpu = profile.vram_gb >= 1.0;
         let high_vram = profile.vram_gb >= 8.0;
 
+        let mut extra_args = HashMap::new();
+        extra_args.insert(
+            "prompt-cache".to_string(),
+            serde_json::json!("/models/prompt.cache")
+        );
+        extra_args.insert(
+            "prompt-cache-all".to_string(),
+            serde_json::json!(true)
+        );
+
         LlamaServerArgs {
             ctx_size: if high_vram { 4096 } else { 2048 },
             n_gpu_layers: if has_gpu { 999 } else { 0 },
             flash_attn: has_gpu,
             cache_type_k: if has_gpu { "q8_0" } else { "f16" }.to_string(),
             cache_type_v: if has_gpu { "q8_0" } else { "f16" }.to_string(),
+            extra_args,
         }
     }
 
@@ -44,6 +58,18 @@ impl LlamaServerArgs {
             " --cache-type-k {} --cache-type-v {}",
             self.cache_type_k, self.cache_type_v
         ));
+        for (key, value) in &self.extra_args {
+            if let Some(b) = value.as_bool() {
+                if b {
+                    args.push_str(&format!(" --{}", key));
+                }
+            } else if let Some(s) = value.as_str() {
+                let expanded_s = shellexpand::tilde(s).to_string();
+                args.push_str(&format!(" --{} {}", key, expanded_s));
+            } else {
+                args.push_str(&format!(" --{} {}", key, value));
+            }
+        }
         args
     }
 }
@@ -53,7 +79,7 @@ pub struct InitConfig {
     pub models: Vec<ModelSelection>,
     pub run_in_docker: bool,
     pub selected_skills: Vec<String>,
-    pub models_dir: std::path::PathBuf,
+    pub models_dir: String,
     pub port: u16,
     #[serde(default)]
     pub llama_server_args: Option<LlamaServerArgs>,
@@ -101,26 +127,49 @@ pub fn prompt_user(
                     quant: None,
                 })
                 .collect()
-        } else if !profile.recommended_combos.is_empty() {
-            let combo = profile.recommended_combos.first().unwrap();
-            vec![
-                ModelSelection {
-                    name: combo.standard_model.name.clone(),
-                    quant: Some(combo.standard_model.best_quant.clone()),
-                },
-                ModelSelection {
-                    name: combo.autocomplete_model.name.clone(),
-                    quant: Some(combo.autocomplete_model.best_quant.clone()),
-                },
-            ]
         } else {
-            vec![ModelSelection {
-                name: recommended_model.to_string(),
-                quant: profile
-                    .recommended_models
-                    .first()
-                    .map(|m| m.best_quant.clone()),
-            }]
+            // Prefer Coding models in auto-mode
+            let coding_combo = profile.recommended_combos.iter().find(|c| {
+                c.standard_model.category.contains("Code") || c.autocomplete_model.category.contains("Code")
+            });
+            
+            if let Some(combo) = coding_combo {
+                vec![
+                    ModelSelection {
+                        name: combo.standard_model.name.clone(),
+                        quant: Some(combo.standard_model.best_quant.clone()),
+                    },
+                    ModelSelection {
+                        name: combo.autocomplete_model.name.clone(),
+                        quant: Some(combo.autocomplete_model.best_quant.clone()),
+                    },
+                ]
+            } else if let Some(model) = profile.recommended_models.iter().find(|m| m.category.contains("Code")) {
+                vec![ModelSelection {
+                    name: model.name.clone(),
+                    quant: Some(model.best_quant.clone()),
+                }]
+            } else if !profile.recommended_combos.is_empty() {
+                let combo = profile.recommended_combos.first().unwrap();
+                vec![
+                    ModelSelection {
+                        name: combo.standard_model.name.clone(),
+                        quant: Some(combo.standard_model.best_quant.clone()),
+                    },
+                    ModelSelection {
+                        name: combo.autocomplete_model.name.clone(),
+                        quant: Some(combo.autocomplete_model.best_quant.clone()),
+                    },
+                ]
+            } else {
+                vec![ModelSelection {
+                    name: recommended_model.to_string(),
+                    quant: profile
+                        .recommended_models
+                        .first()
+                        .map(|m| m.best_quant.clone()),
+                }]
+            }
         };
 
         return Ok((
@@ -128,11 +177,8 @@ pub fn prompt_user(
                 models,
                 run_in_docker: !args.no_docker,
                 selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
-                models_dir: args.models_dir.clone().unwrap_or_else(|| {
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".opencode")
-                        .join("models")
+                models_dir: args.models_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| {
+                    "~/.opencode/models".to_string()
                 }),
                 port: args.port,
                 llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
@@ -151,16 +197,32 @@ pub fn prompt_user(
     let is_dynamic = !profile.recommended_models.is_empty();
     let has_combos = !profile.recommended_combos.is_empty();
 
-    let all_options: Vec<String> = if has_combos {
+    let use_combos = if has_combos && !args.yes {
+        let choice = inquire::Select::new(
+            "How would you like to run the models?",
+            vec![
+                "Single Model (Default)",
+                "Normal Model + Small Autocomplete Model",
+            ],
+        )
+        .prompt()?;
+        choice.starts_with("Normal Model")
+    } else {
+        false
+    };
+
+    let all_options: Vec<String> = if use_combos {
         profile
             .recommended_combos
             .iter()
+            .filter(|c| c.standard_model.category.contains("Code") || c.autocomplete_model.category.contains("Code"))
             .map(|c| format!("{} (Score: {:.1})", c.name, c.score))
             .collect()
     } else if is_dynamic {
         profile
             .recommended_models
             .iter()
+            .filter(|m| m.category.contains("Code"))
             .map(|m| {
                 format!(
                     "{} (Score: {:.1}, Quant: {})",
@@ -173,11 +235,18 @@ pub fn prompt_user(
     };
 
     let mut default_indices = Vec::new();
+    
+    // Add recommended model by default if it's in the list
     if let Some(idx) = all_options.iter().position(|x| x.contains(default_choice)) {
         default_indices.push(idx);
-    } else if !all_options.is_empty() {
+    }
+
+    if default_indices.is_empty() && !all_options.is_empty() {
         default_indices.push(0);
     }
+    
+    default_indices.sort();
+    default_indices.dedup();
 
     let selected_options = inquire::MultiSelect::new(
         "Which models would you like to install and use?",
@@ -199,7 +268,7 @@ pub fn prompt_user(
             final_name = opt[..idx].to_string();
         }
 
-        if has_combos {
+        if use_combos {
             if let Some(combo) = profile
                 .recommended_combos
                 .iter()
@@ -247,17 +316,13 @@ pub fn prompt_user(
         available_skills.insert(0, context7);
     }
 
-    let default_models_dir = args.models_dir.clone().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".opencode")
-            .join("models")
-    });
+    let default_models_dir = args.models_dir.as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "~/.opencode/models".to_string());
 
     let models_dir_str = inquire::Text::new("Where would you like to save models locally?")
-        .with_default(&default_models_dir.to_string_lossy())
+        .with_default(&default_models_dir)
         .prompt()?;
-    let models_dir = std::path::PathBuf::from(models_dir_str);
 
     let default_indices = (0..available_skills.len()).collect::<Vec<_>>();
     let selected_skills = inquire::MultiSelect::new(
@@ -273,7 +338,7 @@ pub fn prompt_user(
             models: selected_models,
             run_in_docker,
             selected_skills,
-            models_dir,
+            models_dir: models_dir_str,
             port: args.port,
             llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
         },
@@ -313,7 +378,7 @@ mod tests {
             }],
             run_in_docker: true,
             selected_skills: vec!["context7".to_string()],
-            models_dir: std::path::PathBuf::from("/tmp/models"),
+            models_dir: "/tmp/models".to_string(),
             port: 8080,
             llama_server_args: None,
         };
@@ -325,18 +390,24 @@ mod tests {
 
     #[test]
     fn test_llama_server_args_to_cli_gpu() {
+        let mut extra_args = HashMap::new();
+        extra_args.insert("numa".to_string(), serde_json::json!("numactl"));
+        extra_args.insert("mlock".to_string(), serde_json::json!(true));
         let args = LlamaServerArgs {
             ctx_size: 4096,
             n_gpu_layers: 999,
             flash_attn: true,
             cache_type_k: "q8_0".to_string(),
             cache_type_v: "q8_0".to_string(),
+            extra_args,
         };
         let cli = args.to_cli_args();
         assert!(cli.contains("--ctx-size 4096"));
         assert!(cli.contains("--n-gpu-layers 999"));
         assert!(cli.contains("--flash-attn"));
         assert!(cli.contains("--cache-type-k q8_0"));
+        assert!(cli.contains("--numa numactl"));
+        assert!(cli.contains("--mlock"));
     }
 
     #[test]
@@ -347,11 +418,38 @@ mod tests {
             flash_attn: false,
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
+            extra_args: HashMap::new(),
         };
         let cli = args.to_cli_args();
         assert!(cli.contains("--ctx-size 2048"));
         assert!(cli.contains("--n-gpu-layers 0"));
         assert!(!cli.contains("--flash-attn"));
         assert!(cli.contains("--cache-type-k f16"));
+    }
+    #[test]
+    fn test_llama_server_args_deserialize_dynamic() {
+        let json_payload = r#"{
+            "ctx_size": 4096,
+            "n_gpu_layers": 999,
+            "flash_attn": true,
+            "cache_type_k": "q8_0",
+            "cache_type_v": "q8_0",
+            "numa": "numactl",
+            "threads": 8,
+            "mlock": true,
+            "no_mmap": false
+        }"#;
+
+        let args: LlamaServerArgs = serde_json::from_str(json_payload).expect("Failed to deserialize");
+        let cli = args.to_cli_args();
+        
+        assert!(cli.contains("--ctx-size 4096"));
+        assert!(cli.contains("--n-gpu-layers 999"));
+        assert!(cli.contains("--flash-attn"));
+        assert!(cli.contains("--cache-type-k q8_0"));
+        assert!(cli.contains("--numa numactl"));
+        assert!(cli.contains("--threads 8"));
+        assert!(cli.contains("--mlock"));
+        assert!(!cli.contains("--no_mmap")); // False bools are ignored in my logic
     }
 }

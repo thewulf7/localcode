@@ -1,25 +1,27 @@
 {
   "models": [
     {
-      "name": "llama3-8b-instruct",
-      "quant": null
+      "name": "Qwen/Qwen2.5-VL-3B-Instruct",
+      "quant": "Q8_0"
     },
     {
-      "name": "qwen2.5-coder-1.5b-instruct",
-      "quant": null
+      "name": "lmstudio-community/Qwen2.5-Coder-14B-Instruct-MLX-8bit",
+      "quant": "Q8_0"
     }
   ],
   "run_in_docker": true,
   "selected_skills": [
     "context7"
   ],
-  "models_dir": "C:\\Users\\admin\\.opencode\\models",
+  "models_dir": "~/.local/localcode/models",
   "port": 8080,
   "llama_server_args": {
     "ctx_size": 4096,
     "n_gpu_layers": 999,
     "flash_attn": true,
     "cache_type_k": "q8_0",
-    "cache_type_v": "q8_0"
+    "cache_type_v": "q8_0",
+    "prompt-cache-all": true,
+    "prompt-cache": "~/.local/localcode/models/prompt.cache"
   }
 }

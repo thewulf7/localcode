@@ -20,6 +20,7 @@ pub struct RecommendedCombo {
 #[derive(Debug, Clone)]
 pub struct RecommendedModel {
     pub name: String,
+    pub category: String,
     pub score: f32,
     pub best_quant: String,
 }
@@ -60,6 +61,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
     for fit in &ranked {
         recommended_models.push(RecommendedModel {
             name: fit.model.name.clone(),
+            category: format!("{:?}", fit.model.use_case),
             score: fit.score as f32,
             best_quant: fit.best_quant.clone(),
         });
@@ -91,11 +93,13 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
                     name: combo_name,
                     standard_model: RecommendedModel {
                         name: std_fit.model.name.clone(),
+                        category: format!("{:?}", std_fit.model.use_case),
                         score: std_fit.score as f32,
                         best_quant: std_fit.best_quant.clone(),
                     },
                     autocomplete_model: RecommendedModel {
                         name: auto_fit.model.name.clone(),
+                        category: format!("{:?}", auto_fit.model.use_case),
                         score: auto_fit.score as f32,
                         best_quant: auto_fit.best_quant.clone(),
                     },

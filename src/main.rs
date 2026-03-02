@@ -83,13 +83,16 @@ async fn main() -> Result<()> {
                     style(config.port).yellow()
                 );
 
-                if !config.models_dir.exists() {
-                    tokio::fs::create_dir_all(&config.models_dir)
+                let models_dir_expanded = shellexpand::tilde(&config.models_dir).to_string();
+                let models_dir = std::path::PathBuf::from(models_dir_expanded);
+
+                if !models_dir.exists() {
+                    tokio::fs::create_dir_all(&models_dir)
                         .await
                         .unwrap_or(());
                 }
 
-                if let Err(e) = runner::download_models(&config.models, &config.models_dir).await {
+                if let Err(e) = runner::download_models(&config.models, &models_dir).await {
                     println!(
                         "\n{} {}",
                         style("❌ Failed to download models:").red().bold(),
@@ -100,7 +103,7 @@ async fn main() -> Result<()> {
 
                 if let Err(e) = runner::start_llama_swap_docker(
                     &config.models,
-                    &config.models_dir,
+                    &models_dir,
                     config.port,
                     config.llama_server_args.as_ref(),
                 )
@@ -174,12 +177,11 @@ async fn main() -> Result<()> {
             );
 
             // 2. Determine Optimal Model
-            let recommended_model = match profile.vram_gb {
-                v if v >= 24.0 => "llama3-70b-instruct",
-                v if v >= 16.0 => "mixtral-8x7b-instruct",
-                v if v >= 8.0 => "llama3-8b-instruct",
-                _ => "phi3-mini",
-            };
+            let recommended_model = profile
+                .recommended_models
+                .first()
+                .map(|m| m.name.as_str())
+                .unwrap_or("phi3-mini");
 
             // 3. User Interaction
             println!();
