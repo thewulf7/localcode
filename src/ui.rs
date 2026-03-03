@@ -29,12 +29,9 @@ impl LlamaServerArgs {
         let mut extra_args = HashMap::new();
         extra_args.insert(
             "prompt-cache".to_string(),
-            serde_json::json!("/models/prompt.cache")
+            serde_json::json!("/models/prompt.cache"),
         );
-        extra_args.insert(
-            "prompt-cache-all".to_string(),
-            serde_json::json!(true)
-        );
+        extra_args.insert("prompt-cache-all".to_string(), serde_json::json!(true));
 
         LlamaServerArgs {
             ctx_size: if high_vram { 4096 } else { 2048 },
@@ -130,9 +127,10 @@ pub fn prompt_user(
         } else {
             // Prefer Coding models in auto-mode
             let coding_combo = profile.recommended_combos.iter().find(|c| {
-                c.standard_model.category.contains("Code") || c.autocomplete_model.category.contains("Code")
+                c.standard_model.category.contains("Code")
+                    || c.autocomplete_model.category.contains("Code")
             });
-            
+
             if let Some(combo) = coding_combo {
                 vec![
                     ModelSelection {
@@ -144,7 +142,11 @@ pub fn prompt_user(
                         quant: Some(combo.autocomplete_model.best_quant.clone()),
                     },
                 ]
-            } else if let Some(model) = profile.recommended_models.iter().find(|m| m.category.contains("Code")) {
+            } else if let Some(model) = profile
+                .recommended_models
+                .iter()
+                .find(|m| m.category.contains("Code"))
+            {
                 vec![ModelSelection {
                     name: model.name.clone(),
                     quant: Some(model.best_quant.clone()),
@@ -177,9 +179,11 @@ pub fn prompt_user(
                 models,
                 run_in_docker: !args.no_docker,
                 selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
-                models_dir: args.models_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| {
-                    "~/.opencode/models".to_string()
-                }),
+                models_dir: args
+                    .models_dir
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "~/.opencode/models".to_string()),
                 port: args.port,
                 llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
             },
@@ -215,7 +219,10 @@ pub fn prompt_user(
         profile
             .recommended_combos
             .iter()
-            .filter(|c| c.standard_model.category.contains("Code") || c.autocomplete_model.category.contains("Code"))
+            .filter(|c| {
+                c.standard_model.category.contains("Code")
+                    || c.autocomplete_model.category.contains("Code")
+            })
             .map(|c| format!("{} (Score: {:.1})", c.name, c.score))
             .collect()
     } else if is_dynamic {
@@ -235,7 +242,7 @@ pub fn prompt_user(
     };
 
     let mut default_indices = Vec::new();
-    
+
     // Add recommended model by default if it's in the list
     if let Some(idx) = all_options.iter().position(|x| x.contains(default_choice)) {
         default_indices.push(idx);
@@ -244,7 +251,7 @@ pub fn prompt_user(
     if default_indices.is_empty() && !all_options.is_empty() {
         default_indices.push(0);
     }
-    
+
     default_indices.sort();
     default_indices.dedup();
 
@@ -316,7 +323,9 @@ pub fn prompt_user(
         available_skills.insert(0, context7);
     }
 
-    let default_models_dir = args.models_dir.as_ref()
+    let default_models_dir = args
+        .models_dir
+        .as_ref()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "~/.opencode/models".to_string());
 
@@ -440,9 +449,10 @@ mod tests {
             "no_mmap": false
         }"#;
 
-        let args: LlamaServerArgs = serde_json::from_str(json_payload).expect("Failed to deserialize");
+        let args: LlamaServerArgs =
+            serde_json::from_str(json_payload).expect("Failed to deserialize");
         let cli = args.to_cli_args();
-        
+
         assert!(cli.contains("--ctx-size 4096"));
         assert!(cli.contains("--n-gpu-layers 999"));
         assert!(cli.contains("--flash-attn"));

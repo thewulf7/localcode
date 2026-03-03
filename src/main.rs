@@ -87,9 +87,7 @@ async fn main() -> Result<()> {
                 let models_dir = std::path::PathBuf::from(models_dir_expanded);
 
                 if !models_dir.exists() {
-                    tokio::fs::create_dir_all(&models_dir)
-                        .await
-                        .unwrap_or(());
+                    tokio::fs::create_dir_all(&models_dir).await.unwrap_or(());
                 }
 
                 if let Err(e) = runner::download_models(&config.models, &models_dir).await {
