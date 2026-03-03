@@ -40,19 +40,30 @@ jobs:
     - name: Build release
       run: cargo build --release --verbose
 
+    - name: Archive artifact (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        Compress-Archive -Path target/release/localcode.exe -DestinationPath target/release/localcode-x86_64-pc-windows-msvc.zip
+
     - name: Upload artifact (Windows)
       if: matrix.os == 'windows-latest'
       uses: actions/upload-artifact@v4
       with:
         name: localcode-windows
-        path: target/release/localcode.exe
+        path: target/release/localcode-x86_64-pc-windows-msvc.zip
+
+    - name: Archive artifact (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        cd target/release
+        tar -czf localcode-x86_64-unknown-linux-gnu.tar.gz localcode
 
     - name: Upload artifact (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
       uses: actions/upload-artifact@v4
       with:
         name: localcode-ubuntu
-        path: target/release/localcode
+        path: target/release/localcode-x86_64-unknown-linux-gnu.tar.gz
 
   release:
     name: Release to GitHub
@@ -105,10 +116,9 @@ jobs:
         
     - name: Prepare Assets
       run: |
-        # Rename assets for clarity in the release page
-        mv artifacts/localcode.exe artifacts/localcode-windows.exe
-        mv artifacts/localcode artifacts/localcode-ubuntu
-        chmod +x artifacts/localcode-ubuntu
+        # Ensure files are properly structured for release
+        mv artifacts/localcode-windows.zip artifacts/localcode-x86_64-pc-windows-msvc.zip 2>/dev/null || true
+        mv artifacts/localcode-ubuntu.tar.gz artifacts/localcode-x86_64-unknown-linux-gnu.tar.gz 2>/dev/null || true
         
     - name: Create Release
       env:
@@ -117,5 +127,5 @@ jobs:
         gh release create "v${{ steps.bump.outputs.version }}" \
           --title "Release v${{ steps.bump.outputs.version }}" \
           --generate-notes \
-          artifacts/localcode-windows.exe \
-          artifacts/localcode-ubuntu
+          artifacts/localcode-x86_64-pc-windows-msvc.zip \
+          artifacts/localcode-x86_64-unknown-linux-gnu.tar.gz
