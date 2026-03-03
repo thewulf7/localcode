@@ -1,0 +1,42 @@
+﻿cargo :    Compiling localcode v0.1.4 
+(C:\Users\admin\Developer\localcode)
+At line:1 char:1
++ cargo build 2>&1 | Out-File -Encoding 
+utf8 cargo_debug.log
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecifi 
+   ed: (   Compiling lo...oper\localcod  
+  e):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeComm 
+   andError
+ 
+error[E0599]: no method named 
+`no_archive` found for mutable reference 
+`&mut self_update::backends::github::Upda
+teBuilder` in the current scope
+   --> src\main.rs:153:18
+    |
+146 |               let status = self_upd
+ate::backends::github::Update::configure(
+)
+    |  __________________________-
+147 | |                 
+.repo_owner("thewulf7")
+148 | |                 
+.repo_name("localcode")
+149 | |                 
+.bin_name("localcode")
+...   |
+152 | |                 
+.target(target_os_suffix)
+153 | |                 .no_archive(true)
+    | |                 -^^^^^^^^^^ 
+method not found in `&mut self_update::ba
+ckends::github::UpdateBuilder`
+    | |_________________|
+    |
+
+For more information about this error, 
+try `rustc --explain E0599`.
+error: could not compile `localcode` 
+(bin "localcode") due to 1 previous error
