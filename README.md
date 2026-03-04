@@ -41,12 +41,12 @@ LocalCode runs via Containerization. You must have:
 
 **For Linux / macOS:**
 ```bash
-curl -sL https://raw.githubusercontent.com/thewulf7/localcode/master/install.sh | sh
+curl -sL https://appcabin.io/install.sh | sh
 ```
 
 **For Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/thewulf7/localcode/master/install.ps1 | iex
+irm https://appcabin.io/install.ps1 | iex
 ```
 
 *<small>Alternatively, if you have a Rust toolchain installed, you can build from source: `cargo install --git https://github.com/thewulf7/localcode.git`</small>*
