@@ -66,8 +66,41 @@ echo ""
 # Check if INSTALL_DIR is in PATH
 if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
     echo "⚠️  It looks like '$INSTALL_DIR' is not in your PATH."
-    echo "You may need to add it to your shell profile (e.g., ~/.bashrc, ~/.zshrc):"
-    echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+    
+    if [ -c /dev/tty ]; then
+        printf "Would you like to automatically add it to your shell profile (e.g. ~/.bashrc)? [y/N] "
+        if read -r ans < /dev/tty; then
+            if [ "$ans" = "y" ] || [ "$ans" = "Y" ] || [ "$ans" = "yes" ]; then
+                ADDED=0
+                if [ -f "$HOME/.bashrc" ]; then
+                    echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.bashrc"
+                    echo "✅ Added to ~/.bashrc"
+                    ADDED=1
+                fi
+                if [ -f "$HOME/.zshrc" ]; then
+                    echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.zshrc"
+                    echo "✅ Added to ~/.zshrc"
+                    ADDED=1
+                fi
+                
+                if [ $ADDED -eq 1 ]; then
+                    echo "Please restart your terminal or run 'source ~/.bashrc' (or ~/.zshrc) to apply."
+                else
+                    echo "Could not find ~/.bashrc or ~/.zshrc. Please add it manually:"
+                    echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+                fi
+            else
+                echo "Please add it manually to your shell profile:"
+                echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+            fi
+        else
+            echo "Please add it manually to your shell profile:"
+            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        fi
+    else
+        echo "You may need to add it to your shell profile (e.g., ~/.bashrc, ~/.zshrc):"
+        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+    fi
     echo ""
 fi
 
