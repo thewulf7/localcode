@@ -24,7 +24,26 @@ pub struct LlamaServerArgs {
 impl LlamaServerArgs {
     pub fn from_hardware(profile: &HardwareProfile) -> Self {
         let has_gpu = profile.vram_gb >= 1.0;
-        let high_vram = profile.vram_gb >= 8.0;
+
+        let ctx_size = if has_gpu {
+            if profile.vram_gb >= 24.0 {
+                32768
+            } else if profile.vram_gb >= 16.0 {
+                16384
+            } else if profile.vram_gb >= 12.0 {
+                8192
+            } else if profile.vram_gb >= 8.0 {
+                4096
+            } else {
+                2048
+            }
+        } else if profile.ram_gb >= 32.0 {
+            8192
+        } else if profile.ram_gb >= 16.0 {
+            4096
+        } else {
+            2048
+        };
 
         let mut extra_args = HashMap::new();
         extra_args.insert(
@@ -34,7 +53,7 @@ impl LlamaServerArgs {
         extra_args.insert("prompt-cache-all".to_string(), serde_json::json!(true));
 
         LlamaServerArgs {
-            ctx_size: if high_vram { 4096 } else { 2048 },
+            ctx_size,
             n_gpu_layers: if has_gpu { 999 } else { 0 },
             flash_attn: has_gpu,
             cache_type_k: if has_gpu { "q8_0" } else { "f16" }.to_string(),

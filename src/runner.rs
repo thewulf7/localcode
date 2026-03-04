@@ -10,11 +10,18 @@ pub async fn extract_hf_repo_and_file(
     if let Some(q) = quant {
         // It's a dynamic llmfit model, format as `user/model` and `*quant.gguf`
         let parts: Vec<&str> = model_name.split('/').collect();
-        let base_name = if parts.len() > 1 {
+        let mut base_name = if parts.len() > 1 {
             parts[1]
         } else {
             model_name
         };
+
+        // Strip quantization suffixes that llmfit might include
+        if base_name.ends_with("-AWQ") {
+            base_name = &base_name[..base_name.len() - 4];
+        } else if base_name.ends_with("-GPTQ") || base_name.ends_with("-GGUF") {
+            base_name = &base_name[..base_name.len() - 5];
+        }
 
         let repo = format!("bartowski/{}-GGUF", base_name);
         let file = format!("{}-{}.gguf", base_name, q);
