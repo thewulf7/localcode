@@ -101,6 +101,19 @@ pub struct InitConfig {
     pub llama_server_args: Option<LlamaServerArgs>,
 }
 
+impl Default for InitConfig {
+    fn default() -> Self {
+        Self {
+            models: Vec::new(),
+            run_in_docker: true,
+            selected_skills: Vec::new(),
+            models_dir: "~/.opencode/models".to_string(),
+            port: 8080,
+            llama_server_args: None,
+        }
+    }
+}
+
 const AVAILABLE_MODELS: &[&str] = &[
     "llama3-8b-instruct",
     "mixtral-8x7b-instruct",

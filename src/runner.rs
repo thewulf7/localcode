@@ -54,6 +54,9 @@ pub async fn download_models(
         .with_cache_dir(models_dir.to_path_buf())
         .build()?;
 
+    // Pre-scan: gather all locally available models
+    let local_models = crate::models::find_all_local_models(models_dir);
+
     for m in models {
         let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
 
@@ -62,6 +65,22 @@ pub async fn download_models(
         }
 
         let file_name = file.unwrap();
+
+        // Check if this model file already exists locally (by filename match)
+        let already_exists = local_models.iter().any(|lm| {
+            lm.name == file_name
+                || lm.name.to_lowercase() == file_name.to_lowercase()
+        });
+
+        if already_exists {
+            println!(
+                "{} {} {}",
+                style("✓").green().bold(),
+                style(&m.name).magenta(),
+                style("already cached locally, skipping download.").dim()
+            );
+            continue;
+        }
 
         println!(
             "{} {}",
