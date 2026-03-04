@@ -4,7 +4,7 @@ set -e
 # Default settings
 REPO="thewulf7/localcode"
 BIN_NAME="localcode"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="$HOME/.local/bin"
 
 # Determine OS and Architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -53,17 +53,22 @@ curl -L -# -o "$TAR_FILE" "$DOWNLOAD_URL"
 
 # Install Phase
 echo "Installing $BIN_NAME to $INSTALL_DIR..."
+mkdir -p "$INSTALL_DIR"
 chmod +x "$TMP_DIR/$BIN_NAME"
 
-if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMP_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-else
-    echo "Requires sudo privileges to write to $INSTALL_DIR"
-    sudo mv "$TMP_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-fi
+mv "$TMP_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
 
 rm -rf "$TMP_DIR"
 
 echo "✅ $BIN_NAME installed successfully to $INSTALL_DIR/$BIN_NAME"
 echo ""
+
+# Check if INSTALL_DIR is in PATH
+if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
+    echo "⚠️  It looks like '$INSTALL_DIR' is not in your PATH."
+    echo "You may need to add it to your shell profile (e.g., ~/.bashrc, ~/.zshrc):"
+    echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+    echo ""
+fi
+
 echo "Run '$BIN_NAME --help' to get started."
