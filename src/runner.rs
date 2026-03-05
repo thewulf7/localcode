@@ -67,10 +67,9 @@ pub async fn download_models(
         let file_name = file.unwrap();
 
         // Check if this model file already exists locally (by filename match)
-        let already_exists = local_models.iter().any(|lm| {
-            lm.name == file_name
-                || lm.name.to_lowercase() == file_name.to_lowercase()
-        });
+        let already_exists = local_models
+            .iter()
+            .any(|lm| lm.name == file_name || lm.name.to_lowercase() == file_name.to_lowercase());
 
         if already_exists {
             println!(

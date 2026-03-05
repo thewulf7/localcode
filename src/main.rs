@@ -1,8 +1,8 @@
 mod config;
+mod models;
 mod profiling;
 mod runner;
 mod ui;
-mod models;
 
 use anyhow::Result;
 use clap::{Args as ClapArgs, Parser, Subcommand};
@@ -66,22 +66,37 @@ async fn main() -> Result<()> {
     match args.command {
         Commands::Ls => {
             let config = config::load_localcode_config().await.unwrap_or_default();
-            
-            println!("{}", style("🔍 Scanning local system for cached weights...").dim());
-            
+
+            println!(
+                "{}",
+                style("🔍 Scanning local system for cached weights...").dim()
+            );
+
             let models_dir_expanded = shellexpand::tilde(&config.models_dir).to_string();
             let models_dir = std::path::PathBuf::from(models_dir_expanded);
-            
+
             let all_models = models::find_all_local_models(&models_dir);
-            
+
             if all_models.is_empty() {
-                println!("\n{} No cached models found on the system.", style("ℹ").yellow());
+                println!(
+                    "\n{} No cached models found on the system.",
+                    style("ℹ").yellow()
+                );
                 println!("  Try running `localcode start` to fetch a new model.");
                 return Ok(());
             }
 
-            println!("\n{} {} Local Models Discovered", style("✓").green().bold(), all_models.len());
-            println!("{:<60} | {:<12} | {:<20}", style("Name").bold().cyan(), style("Size").bold().cyan(), style("Cache Source").bold().cyan());
+            println!(
+                "\n{} {} Local Models Discovered",
+                style("✓").green().bold(),
+                all_models.len()
+            );
+            println!(
+                "{:<60} | {:<12} | {:<20}",
+                style("Name").bold().cyan(),
+                style("Size").bold().cyan(),
+                style("Cache Source").bold().cyan()
+            );
             println!("{:-<60}-|-{:-<12}-|-{:-<20}", "", "", "");
 
             for m in all_models {
@@ -92,9 +107,14 @@ async fn main() -> Result<()> {
                     print_name.truncate(55);
                     print_name.push_str("...");
                 }
-                println!("{:<60} | {:<12} | {:<20}", print_name, size_str, style(m.source).dim());
+                println!(
+                    "{:<60} | {:<12} | {:<20}",
+                    print_name,
+                    size_str,
+                    style(m.source).dim()
+                );
             }
-            println!("");
+            println!();
         }
         Commands::Status => {
             runner::show_status().await?;
