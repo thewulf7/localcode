@@ -18,24 +18,27 @@
 
 *   **Intelligent Hardware Profiling:** Uses `llmfit-core` to auto-detect system RAM and VRAM capability, recommending the maximum context lengths and quantizations native to your machine. No more out-of-memory errors!
 *   **Dual Model Combos:** Automatically suggests ideal combinations of large reasoning models alongside lightning-fast **autocomplete models** based strictly on your available VRAM footprint.
-*   **Dynamic Swapping:** Seamlessly switches models in and out of memory at the proxy layer using ghcr.io/mostlygeek/llama-swap. Request a different `.gguf` and watch it instantly swap.
+*   **Dynamic Swapping:** Seamlessly switches models in and out of memory at the proxy layer using `ghcr.io/mostlygeek/llama-swap`. Request a different `.gguf` and watch it instantly swap.
 *   **Zero Port Conflicts:** Both your heavy chat model and your instantaneous autocomplete model run on the *exact same port* (`8080`). The proxy handles the routing natively.
+*   **Model Discovery:** Automatically scans known cache locations — **Ollama**, **LM Studio**, and any custom directory — so you can reuse weights you already have on disk (`localcode ls`).
+*   **Configurable llama.cpp Args:** Fine-tune GPU layers, context size, KV cache quantization, flash attention, and any other `llama.cpp` parameter directly in `localcode.json`.
 *   **Global & Project Contexts:** Store state globally or override properties explicitly across projects (`localcode init`).
 *   **One-Line Installation:** Install immediately with secure OS-specific scripts without requiring a Rust toolchain.
+*   **Self-Upgrade:** Update the binary in-place from GitHub releases (`localcode upgrade`).
 
 ---
 
 ## 🛠️ Prerequisites
 
-LocalCode runs via Containerization. You must have:
+LocalCode runs via containerization. You must have:
 
 *   **Docker Desktop** or **Podman** installed on the host OS.
-*   If utilizing Nvidia Acceleration on Windows, you must configure **WSL2 passthrough** and have the **NVIDIA Container Toolkit** correctly mapped.
-*   Minimum 8 GB RAM (16 GB+ is strongly recommended for practical inference scaling).
+*   If utilizing NVIDIA acceleration on Windows, you must configure **WSL2 passthrough** and have the **NVIDIA Container Toolkit** correctly mapped.
+*   Minimum **8 GB RAM** (16 GB+ is strongly recommended for practical inference scaling).
 
 ---
 
-## ⚡ Getting Started
+## ⚡ Quick Start
 
 ### 1. Installation
 
@@ -53,20 +56,26 @@ irm https://appcabin.io/install.ps1 | iex
 
 ### 2. Initial Setup
 
-Configure your models and directories for the first time. LocalCode will guide you interactively, recommend the best weights, and download them automatically from Hugging Face:
+Configure your models and directories for the first time. LocalCode will profile your hardware, recommend model/quantization combos, and download them automatically from Hugging Face:
 
 ```bash
 localcode init
 ```
-*(During setup, if your hardware supports it, LocalCode will suggest **Combo Models**! This automatically spins up logic to allocate `llm` and `tabAutocompleteModel` targets beautifully for OpenCode.)*
+
+During setup you will be prompted to choose:
+- **Scope** — Local (current project) or Global (`~/.config/localcode/`).
+- **Model Mode** — Single model or a Normal + Autocomplete combo.
+- **Models** — Picked from hardware-profiled recommendations filtered for coding tasks.
+- **Docker** — Whether to use the Docker-based llama.cpp backend.
+- **Models directory** — Where to store downloaded GGUF weights.
+- **Skills** — Optional OpenCode skill packs to install.
 
 **Headless Setup (CI/CD / Automation):**
-You can also bypass the prompts by providing arguments directly:
 ```bash
-localcode init --yes -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
+localcode init --yes --global -m "llama3-8b-instruct" -m "qwen2.5-coder-1.5b-instruct"
 ```
 
-### 3. Starting the Environment
+### 3. Start the Server
 
 Deploys the reverse proxy mapping across Docker and orchestrates the weights:
 
@@ -74,9 +83,7 @@ Deploys the reverse proxy mapping across Docker and orchestrates the weights:
 localcode start
 ```
 
-### 4. Verification and Shutdown
-
-Once running, verify the status or shut down the container gracefully:
+### 4. Status & Shutdown
 
 ```bash
 # Check the container lifecycle and proxy mapping
@@ -86,29 +93,39 @@ localcode status
 localcode stop
 ```
 
-### 5. Maintaining LocalCode
-LocalCode can seamlessly update itself from the GitHub releases repository without requiring package managers.
+### 5. Discover Local Models
+
+List all `.gguf` weights already present on your system (Ollama, LM Studio, or any configured directory):
+
+```bash
+localcode ls
+```
+
+### 6. Self-Update
 
 ```bash
 localcode upgrade
 ```
 
+> 📖 **For a complete command reference, configuration guide, and troubleshooting docs see [GUIDE.md](GUIDE.md).**
+
 ---
 
 ## 🏛️ Architecture
 
-LocalCode is composed explicitly of highly predictable, independent components communicating via a local service mesh structure. 
+LocalCode is composed of highly predictable, independent components communicating via a local service mesh structure.
 
 ### Directory Structure & Config Map
-The system uses the `~/.config/localcode/` directory (or OS equivalent) to maintain its global definition map. 
+
+The system uses `~/.config/localcode/` (or OS equivalent) to maintain its global definition map:
 
 ```
 ~/.config/localcode/
  ├── localcode.json       # Central Configuration State
- └── models/              # Downloaded HuggingFace GGUF Weights
+ └── models/              # Downloaded HuggingFace GGUF Weights (default)
 ```
 
-*Note: You can override your model path explicitely using `localcode init --models-dir /my/custom/path`.*
+*Note: You can override your model path explicitly using `localcode init --models-dir /my/custom/path`.*
 
 ### Request Lifecycle Flow
 
@@ -123,42 +140,77 @@ graph LR
     B -->|Return JSON| A
 ```
 
-1. **Proxy Intercept:** The reverse proxy `llama-swap` listens continuously. 
+1. **Proxy Intercept:** The reverse proxy `llama-swap` listens continuously.
 2. **Context Resolution:** The proxy observes the requested model string in the payload.
 3. **Weight Loading:** If the specific `.gguf` is not in RAM/VRAM, the backend immediately purges the oldest inactive model and cycles the requested parameters into active memory.
 4. **Execution:** The inference runs cleanly across `llama.cpp`.
 
+### Model Discovery
+
+`localcode ls` scans three sources to find existing `.gguf` weights:
+
+| Source | Path |
+|--------|------|
+| **LocalCode Config** | The directory specified in `localcode.json` → `models_dir` |
+| **Ollama** | `~/.ollama/models/blobs/` (parsed from manifests) |
+| **LM Studio** | `~/.cache/lm-studio/models/` |
+
 ---
 
-## 📝 Configuration (Project-Level Overrides)
+## 📝 Configuration
 
-Need specific models locally configured just for one project boundary? You can initialize a discrete scope overriding the Global `.config` logic. The `localcode init` command will interactively probe you whether to save the configuration `Globally` or `Locally`. 
+### Project-Level Overrides
 
-If you prefer to bypass the prompts inside a local repository target, just run:
+Need specific models configured just for one project? `localcode init` defaults to local scope. To explicitly use global scope instead:
 
 ```bash
-localcode init --local
+localcode init --global
 ```
 
-This deposits a minimal `./localcode.json` map right in your codebase directory. The system will inherently respect this scope hierarchy the next time you invoke `localcode start` from that directory!
+A local `./localcode.json` in the working directory always takes precedence over the global configuration.
+
+### llama.cpp Server Arguments
+
+The `llama_server_args` key in `localcode.json` controls how the llama.cpp backend is launched. These are auto-populated based on your hardware during `init`, but you can manually tune them:
+
+```json
+{
+  "llama_server_args": {
+    "ctx_size": 8192,
+    "n_gpu_layers": 999,
+    "flash_attn": true,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "prompt-cache": "/models/prompt.cache",
+    "prompt-cache-all": true
+  }
+}
+```
+
+Any additional key-value pairs are passed through directly as `--key value` flags to the llama.cpp server.
 
 ---
 
 ## 🆘 Troubleshooting
 
 ### `NVIDIA Container Toolkit not detected`
-**Symptom:** During `localcode start`, Docker attempts to access the GPU (`--gpus all`) and the initialization crashes. 
+**Symptom:** During `localcode start`, Docker attempts to access the GPU (`--gpus all`) and the initialization crashes.
 **Solution:** Ensure you've cleanly installed runtime configurations for Windows WSL mapped drivers. If GPU allocation is irreversibly misconfigured, LocalCode acts gracefully by catching the Docker API bounds error and injecting `--gpus 0`, enabling immediate **CPU fallback processing**.
 
 ### Download Times Out Setting Up Models
 **Symptom:** `localcode init` halts indefinitely while fetching GGUF weights.
 **Solution:** The internal handler syncs securely with Hugging Face Hub limits. Ensure your network doesn't possess SSL inspection hooks obstructing standard HTTPS payload transfers. You can safely abort (`Ctrl+C`) and retry `localcode init`, and the internal downloader will gracefully resume the cached blob segments.
 
+### `Global configuration not found`
+**Symptom:** `localcode start` fails with "Please run `localcode init` first."
+**Solution:** Run `localcode init --global` to create the system-wide configuration, or ensure a local `localcode.json` exists in your working directory.
+
 ---
 
 ## 🤝 Contributing
+
 Contributions, issues, and feature requests are welcome!
-Feel free to check [issues page](https://github.com/thewulf7/localcode/issues).  
+Feel free to check [issues page](https://github.com/thewulf7/localcode/issues).
 
 When submitting PRs, ensure you adhere to the project's formatting by executing:
 ```sh
