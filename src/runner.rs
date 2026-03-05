@@ -1,6 +1,5 @@
 use crate::ui::ModelSelection;
 use anyhow::{Context, Result};
-use hf_hub::api::sync::ApiBuilder;
 use tokio::process::Command;
 
 pub async fn extract_hf_repo_and_file(
@@ -43,74 +42,26 @@ pub async fn extract_hf_repo_and_file(
     ("".to_string(), Some(default_url))
 }
 
-pub async fn download_models(
-    models: &[ModelSelection],
-    models_dir: &std::path::Path,
-) -> Result<()> {
-    use console::style;
-    use indicatif::{ProgressBar, ProgressStyle};
-
-    let api = ApiBuilder::new()
-        .with_cache_dir(models_dir.to_path_buf())
-        .build()?;
-
-    // Pre-scan: gather all locally available models
-    let local_models = crate::models::find_all_local_models(models_dir);
-
-    for m in models {
-        let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
-
-        if repo.is_empty() || file.is_none() {
-            continue;
+/// Walk `models_dir` looking for a `.gguf` file whose name matches `filename`.
+/// Returns the path relative to `models_dir` using forward-slashes (for Docker).
+fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<String> {
+    use walkdir::WalkDir;
+    for entry in WalkDir::new(models_dir).into_iter().filter_map(|e| e.ok()) {
+        if entry.path().is_file()
+            && entry
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == filename)
+                .unwrap_or(false)
+        {
+            if let Ok(rel) = entry.path().strip_prefix(models_dir) {
+                // Use forward slashes for the Linux container path
+                return Some(rel.to_string_lossy().replace('\\', "/"));
+            }
         }
-
-        let file_name = file.unwrap();
-
-        // Check if this model file already exists locally (by filename match)
-        let already_exists = local_models
-            .iter()
-            .any(|lm| lm.name == file_name || lm.name.to_lowercase() == file_name.to_lowercase());
-
-        if already_exists {
-            println!(
-                "{} {} {}",
-                style("✓").green().bold(),
-                style(&m.name).magenta(),
-                style("already cached locally, skipping download.").dim()
-            );
-            continue;
-        }
-
-        println!(
-            "{} {}",
-            style("📥 Checking/Downloading").cyan(),
-            style(&m.name).bold().magenta()
-        );
-
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-                .template("{spinner:.green} {msg}")
-                .unwrap(),
-        );
-        pb.set_message(format!("Downloading {}", file_name));
-
-        // Use spawn_blocking since hf_hub is sync
-        let repo_clone = repo.clone();
-        let file_name_clone = file_name.clone();
-        let api_clone = api.clone();
-        tokio::task::spawn_blocking(move || {
-            let repo_api = api_clone.model(repo_clone);
-            // This will block until downloaded or verify it exists
-            repo_api.get(&file_name_clone)
-        })
-        .await??;
-
-        pb.finish_with_message(format!("✅ {} downloaded.", file_name));
     }
-
-    Ok(())
+    None
 }
 
 pub async fn start_llama_swap_docker(
@@ -156,13 +107,20 @@ pub async fn start_llama_swap_docker(
             autocomplete_models.push(m.name.clone());
         }
 
-        let file_arg = if let Some(f) = file {
-            format!("--hf-file {}", f)
-        } else {
-            String::new()
-        };
-
-        let repo_arg = if !repo.is_empty() {
+        // Prefer local file path if the model is already downloaded
+        let source_args = if let Some(ref f) = file {
+            if let Some(rel_path) = find_local_gguf(models_dir, f) {
+                format!("--model /models/{}", rel_path)
+            } else {
+                // Fall back to HF download at runtime
+                let repo_part = if !repo.is_empty() {
+                    format!("--hf-repo {}", repo)
+                } else {
+                    String::new()
+                };
+                format!("{} --hf-file {}", repo_part, f)
+            }
+        } else if !repo.is_empty() {
             format!("--hf-repo {}", repo)
         } else {
             String::new()
@@ -173,8 +131,8 @@ pub async fn start_llama_swap_docker(
             .unwrap_or_else(|| "--ctx-size 8192".to_string());
 
         yaml_content.push_str(&format!(
-            "    cmd: llama-server --port ${{PORT}} {} {} --host 0.0.0.0 {}\n",
-            repo_arg, file_arg, custom_args
+            "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 {}\n",
+            source_args, custom_args
         ));
     }
 

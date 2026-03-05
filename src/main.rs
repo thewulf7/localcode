@@ -145,15 +145,6 @@ async fn main() -> Result<()> {
                     tokio::fs::create_dir_all(&models_dir).await.unwrap_or(());
                 }
 
-                if let Err(e) = runner::download_models(&config.models, &models_dir).await {
-                    println!(
-                        "\n{} {}",
-                        style("❌ Failed to download models:").red().bold(),
-                        e
-                    );
-                    std::process::exit(1);
-                }
-
                 if let Err(e) = runner::start_llama_swap_docker(
                     &config.models,
                     &models_dir,
