@@ -137,7 +137,7 @@ pub async fn start_llama_swap_docker(
 
     // Attempt to forcefully remove any existing container with the same name to avoid conflicts
     let _ = Command::new("docker")
-        .args(["rm", "-f", "opencode-llm"])
+        .args(["rm", "-f", "localcode-llm"])
         .output()
         .await;
 
@@ -196,7 +196,7 @@ pub async fn start_llama_swap_docker(
         "run".to_string(),
         "-d".to_string(), // run completely detached in the background
         "--name".to_string(),
-        "opencode-llm".to_string(),
+        "localcode-llm".to_string(),
         "--gpus".to_string(),
         "all".to_string(),
         "-e".to_string(),
@@ -271,12 +271,12 @@ pub async fn show_status() -> Result<()> {
 
     println!(
         "{}",
-        style("Streaming live logs from opencode-llm container... (Press Ctrl+C to stop)").cyan()
+        style("Streaming live logs from localcode-llm container... (Press Ctrl+C to stop)").cyan()
     );
 
     // We use `--tail 50` so we don't stream gigantic past histories immediately
     let mut child = Command::new("docker")
-        .args(["logs", "-f", "--tail", "50", "opencode-llm"])
+        .args(["logs", "-f", "--tail", "50", "localcode-llm"])
         .spawn()?;
 
     tokio::select! {
@@ -298,7 +298,7 @@ pub async fn stop_server() -> Result<()> {
     );
 
     let status = Command::new("docker")
-        .args(["rm", "-f", "opencode-llm"])
+        .args(["rm", "-f", "localcode-llm"])
         .output()
         .await?;
 
