@@ -1,5 +1,6 @@
 use crate::ui::ModelSelection;
 use anyhow::{Context, Result};
+use hf_hub::api::sync::ApiBuilder;
 use tokio::process::Command;
 
 pub async fn extract_hf_repo_and_file(
@@ -40,6 +41,76 @@ pub async fn extract_hf_repo_and_file(
     };
 
     ("".to_string(), Some(default_url))
+}
+
+pub async fn download_models(
+    models: &[ModelSelection],
+    models_dir: &std::path::Path,
+) -> Result<()> {
+    use console::style;
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let api = ApiBuilder::new()
+        .with_cache_dir(models_dir.to_path_buf())
+        .build()?;
+
+    // Pre-scan: gather all locally available models
+    let local_models = crate::models::find_all_local_models(models_dir);
+
+    for m in models {
+        let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
+
+        if repo.is_empty() || file.is_none() {
+            continue;
+        }
+
+        let file_name = file.unwrap();
+
+        // Check if this model file already exists locally (by filename match)
+        let already_exists = local_models
+            .iter()
+            .any(|lm| lm.name == file_name || lm.name.to_lowercase() == file_name.to_lowercase());
+
+        if already_exists {
+            println!(
+                "{} {} {}",
+                style("✓").green().bold(),
+                style(&m.name).magenta(),
+                style("already cached locally, skipping download.").dim()
+            );
+            continue;
+        }
+
+        println!(
+            "{} {}",
+            style("📥 Checking/Downloading").cyan(),
+            style(&m.name).bold().magenta()
+        );
+
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        pb.set_message(format!("Downloading {}", file_name));
+
+        // Use spawn_blocking since hf_hub is sync
+        let repo_clone = repo.clone();
+        let file_name_clone = file_name.clone();
+        let api_clone = api.clone();
+        tokio::task::spawn_blocking(move || {
+            let repo_api = api_clone.model(repo_clone);
+            // This will block until downloaded or verify it exists
+            repo_api.get(&file_name_clone)
+        })
+        .await??;
+
+        pb.finish_with_message(format!("✅ {} downloaded.", file_name));
+    }
+
+    Ok(())
 }
 
 /// Walk `models_dir` looking for a `.gguf` file whose name matches `filename`.
