@@ -57,7 +57,6 @@ fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<Strin
             && let Ok(rel) = entry.path().strip_prefix(models_dir) {
                 // Use forward slashes for the Linux container path
                 return Some(rel.to_string_lossy().replace('\\', "/"));
-            }
         }
     }
     None
