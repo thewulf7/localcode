@@ -14,7 +14,7 @@ pub struct ModelSelection {
 pub struct LlamaServerArgs {
     pub ctx_size: u32,
     pub n_gpu_layers: i32,
-    pub flash_attn: bool,
+    pub flash_attn: String,
     pub cache_type_k: String,
     pub cache_type_v: String,
     #[serde(flatten)]
@@ -55,7 +55,11 @@ impl LlamaServerArgs {
         LlamaServerArgs {
             ctx_size,
             n_gpu_layers: if has_gpu { 999 } else { 0 },
-            flash_attn: has_gpu,
+            flash_attn: if has_gpu {
+                "auto".to_string()
+            } else {
+                "off".to_string()
+            },
             cache_type_k: if has_gpu { "q8_0" } else { "f16" }.to_string(),
             cache_type_v: if has_gpu { "q8_0" } else { "f16" }.to_string(),
             extra_args,
@@ -67,8 +71,8 @@ impl LlamaServerArgs {
             "--ctx-size {} --n-gpu-layers {}",
             self.ctx_size, self.n_gpu_layers
         );
-        if self.flash_attn {
-            args.push_str(" --flash-attn");
+        if !self.flash_attn.is_empty() {
+            args.push_str(&format!(" --flash-attn {}", self.flash_attn));
         }
         args.push_str(&format!(
             " --cache-type-k {} --cache-type-v {}",
@@ -437,7 +441,7 @@ mod tests {
         let args = LlamaServerArgs {
             ctx_size: 4096,
             n_gpu_layers: 999,
-            flash_attn: true,
+            flash_attn: "auto".to_string(),
             cache_type_k: "q8_0".to_string(),
             cache_type_v: "q8_0".to_string(),
             extra_args,
@@ -445,7 +449,7 @@ mod tests {
         let cli = args.to_cli_args();
         assert!(cli.contains("--ctx-size 4096"));
         assert!(cli.contains("--n-gpu-layers 999"));
-        assert!(cli.contains("--flash-attn"));
+        assert!(cli.contains("--flash-attn auto"));
         assert!(cli.contains("--cache-type-k q8_0"));
         assert!(cli.contains("--numa numactl"));
         assert!(cli.contains("--mlock"));
@@ -456,7 +460,7 @@ mod tests {
         let args = LlamaServerArgs {
             ctx_size: 2048,
             n_gpu_layers: 0,
-            flash_attn: false,
+            flash_attn: "off".to_string(),
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
             extra_args: HashMap::new(),
@@ -464,7 +468,7 @@ mod tests {
         let cli = args.to_cli_args();
         assert!(cli.contains("--ctx-size 2048"));
         assert!(cli.contains("--n-gpu-layers 0"));
-        assert!(!cli.contains("--flash-attn"));
+        assert!(cli.contains("--flash-attn off"));
         assert!(cli.contains("--cache-type-k f16"));
     }
     #[test]
@@ -472,7 +476,7 @@ mod tests {
         let json_payload = r#"{
             "ctx_size": 4096,
             "n_gpu_layers": 999,
-            "flash_attn": true,
+            "flash_attn": "on",
             "cache_type_k": "q8_0",
             "cache_type_v": "q8_0",
             "numa": "numactl",
@@ -487,7 +491,7 @@ mod tests {
 
         assert!(cli.contains("--ctx-size 4096"));
         assert!(cli.contains("--n-gpu-layers 999"));
-        assert!(cli.contains("--flash-attn"));
+        assert!(cli.contains("--flash-attn on"));
         assert!(cli.contains("--cache-type-k q8_0"));
         assert!(cli.contains("--numa numactl"));
         assert!(cli.contains("--threads 8"));
