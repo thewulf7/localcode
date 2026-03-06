@@ -12,17 +12,22 @@ pub struct ModelSelection {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LlamaServerArgs {
-    pub ctx_size: u32,
-    pub n_gpu_layers: i32,
-    pub flash_attn: String,
-    pub cache_type_k: String,
-    pub cache_type_v: String,
-    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ctx_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub n_gpu_layers: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub flash_attn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cache_type_k: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cache_type_v: Option<String>,
+    #[serde(flatten, default)]
     pub extra_args: HashMap<String, serde_json::Value>,
 }
 
 impl LlamaServerArgs {
-    pub fn from_hardware(profile: &HardwareProfile) -> Self {
+    pub fn from_hardware(profile: &HardwareProfile, models: &[ModelSelection]) -> Self {
         let has_gpu = profile.vram_gb >= 1.0;
 
         let ctx_size = if has_gpu {
@@ -45,39 +50,84 @@ impl LlamaServerArgs {
             2048
         };
 
+        // Heuristic mapping for GPU layers based on VRAM
+        let n_gpu_layers = if has_gpu {
+            if profile.vram_gb >= 12.0 {
+                999 // Offload entirely (fits most 8B)
+            } else if profile.vram_gb >= 8.0 {
+                33 // Typically enough for full 8B, keeps system stable
+            } else if profile.vram_gb >= 6.0 {
+                24
+            } else if profile.vram_gb >= 4.0 {
+                16
+            } else if profile.vram_gb >= 2.0 {
+                8
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        // Heuristic for KV Cache Type based on primary model quant
+        let mut kv_quant = "f16".to_string();
+        if has_gpu {
+            if let Some(m) = models.first() {
+                if let Some(q) = &m.quant {
+                    let q_lower = q.to_lowercase();
+                    if q_lower.contains("8") {
+                        kv_quant = "q8_0".to_string();
+                    } else if q_lower.contains("4") || q_lower.contains("5") {
+                        kv_quant = "q4_0".to_string();
+                    } else {
+                        kv_quant = "q4_0".to_string(); // Safest fallback for VRAM limits
+                    }
+                } else {
+                    kv_quant = "q4_0".to_string();
+                }
+            } else {
+                kv_quant = "q4_0".to_string();
+            }
+        }
+
         let mut extra_args = HashMap::new();
-        extra_args.insert(
-            "prompt-cache".to_string(),
-            serde_json::json!("/models/prompt.cache"),
-        );
-        extra_args.insert("prompt-cache-all".to_string(), serde_json::json!(true));
+        extra_args.insert("--slot-save-path".to_string(), serde_json::json!("/models"));
 
         LlamaServerArgs {
-            ctx_size,
-            n_gpu_layers: if has_gpu { 999 } else { 0 },
-            flash_attn: if has_gpu {
+            ctx_size: Some(ctx_size),
+            n_gpu_layers: Some(n_gpu_layers),
+            flash_attn: Some(if has_gpu {
                 "auto".to_string()
             } else {
                 "off".to_string()
-            },
-            cache_type_k: if has_gpu { "q8_0" } else { "f16" }.to_string(),
-            cache_type_v: if has_gpu { "q8_0" } else { "f16" }.to_string(),
+            }),
+            cache_type_k: Some(kv_quant.clone()),
+            cache_type_v: Some(kv_quant),
             extra_args,
         }
     }
 
     pub fn to_cli_args(&self) -> String {
-        let mut args = format!(
-            "--ctx-size {} --n-gpu-layers {}",
-            self.ctx_size, self.n_gpu_layers
-        );
-        if !self.flash_attn.is_empty() {
-            args.push_str(&format!(" --flash-attn {}", self.flash_attn));
+        let mut args = String::new();
+
+        if let Some(v) = self.ctx_size {
+            args.push_str(&format!(" --ctx-size {}", v));
         }
-        args.push_str(&format!(
-            " --cache-type-k {} --cache-type-v {}",
-            self.cache_type_k, self.cache_type_v
-        ));
+        if let Some(v) = self.n_gpu_layers {
+            args.push_str(&format!(" --n-gpu-layers {}", v));
+        }
+        if let Some(v) = &self.flash_attn
+            && !v.is_empty()
+        {
+            args.push_str(&format!(" --flash-attn {}", v));
+        }
+        if let Some(v) = &self.cache_type_k {
+            args.push_str(&format!(" --cache-type-k {}", v));
+        }
+        if let Some(v) = &self.cache_type_v {
+            args.push_str(&format!(" --cache-type-v {}", v));
+        }
+
         for (key, value) in &self.extra_args {
             if let Some(b) = value.as_bool() {
                 if b {
@@ -90,7 +140,8 @@ impl LlamaServerArgs {
                 args.push_str(&format!(" --{} {}", key, value));
             }
         }
-        args
+
+        args.trim().to_string()
     }
 }
 
@@ -210,6 +261,7 @@ pub fn prompt_user(
             }
         };
 
+        let llama_args = LlamaServerArgs::from_hardware(profile, &models);
         return Ok((
             InitConfig {
                 models,
@@ -221,7 +273,7 @@ pub fn prompt_user(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "~/.opencode/models".to_string()),
                 port: args.port,
-                llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
+                llama_server_args: Some(llama_args),
             },
             is_project_scoped,
         ));
@@ -380,12 +432,12 @@ pub fn prompt_user(
 
     Ok((
         InitConfig {
-            models: selected_models,
+            models: selected_models.clone(),
             run_in_docker,
             selected_skills,
             models_dir: models_dir_str,
             port: args.port,
-            llama_server_args: Some(LlamaServerArgs::from_hardware(profile)),
+            llama_server_args: Some(LlamaServerArgs::from_hardware(profile, &selected_models)),
         },
         is_project_scoped,
     ))
@@ -434,16 +486,40 @@ mod tests {
     }
 
     #[test]
+    fn test_llama_server_args_from_hardware_gpu() {
+        let profile = HardwareProfile {
+            vram_gb: 16.0,
+            ram_gb: 32.0,
+            compute_capability: ComputeCapability::High,
+            recommended_models: vec![],
+            recommended_combos: vec![],
+        };
+        let models = vec![ModelSelection {
+            name: "test-model".to_string(),
+            quant: Some("Q8_0".to_string()),
+        }];
+        let args = LlamaServerArgs::from_hardware(&profile, &models);
+        assert_eq!(args.ctx_size, Some(16384));
+        assert_eq!(args.n_gpu_layers, Some(999));
+        assert_eq!(args.flash_attn, Some("auto".to_string()));
+        assert_eq!(args.cache_type_k, Some("q8_0".to_string()));
+        assert_eq!(
+            args.extra_args.get("--slot-save-path").unwrap(),
+            &serde_json::json!("/models")
+        );
+    }
+
+    #[test]
     fn test_llama_server_args_to_cli_gpu() {
         let mut extra_args = HashMap::new();
         extra_args.insert("numa".to_string(), serde_json::json!("numactl"));
         extra_args.insert("mlock".to_string(), serde_json::json!(true));
         let args = LlamaServerArgs {
-            ctx_size: 4096,
-            n_gpu_layers: 999,
-            flash_attn: "auto".to_string(),
-            cache_type_k: "q8_0".to_string(),
-            cache_type_v: "q8_0".to_string(),
+            ctx_size: Some(4096),
+            n_gpu_layers: Some(999),
+            flash_attn: Some("auto".to_string()),
+            cache_type_k: Some("q8_0".to_string()),
+            cache_type_v: Some("q8_0".to_string()),
             extra_args,
         };
         let cli = args.to_cli_args();
@@ -458,11 +534,11 @@ mod tests {
     #[test]
     fn test_llama_server_args_to_cli_cpu() {
         let args = LlamaServerArgs {
-            ctx_size: 2048,
-            n_gpu_layers: 0,
-            flash_attn: "off".to_string(),
-            cache_type_k: "f16".to_string(),
-            cache_type_v: "f16".to_string(),
+            ctx_size: Some(2048),
+            n_gpu_layers: Some(0),
+            flash_attn: Some("off".to_string()),
+            cache_type_k: Some("f16".to_string()),
+            cache_type_v: Some("f16".to_string()),
             extra_args: HashMap::new(),
         };
         let cli = args.to_cli_args();
@@ -497,5 +573,18 @@ mod tests {
         assert!(cli.contains("--threads 8"));
         assert!(cli.contains("--mlock"));
         assert!(!cli.contains("--no_mmap")); // False bools are ignored in my logic
+    }
+
+    #[test]
+    fn test_llama_server_args_deserialize_optional() {
+        let json_payload = r#"{
+            "threads": 8
+        }"#;
+
+        let args: LlamaServerArgs =
+            serde_json::from_str(json_payload).expect("Failed to deserialize");
+        let cli = args.to_cli_args();
+        assert!(cli.contains("--threads 8"));
+        assert!(!cli.contains("--ctx-size"));
     }
 }
