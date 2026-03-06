@@ -29,6 +29,9 @@ RUN wget -qO- "https://github.com/${LS_REPO}/releases/download/v${LS_VER}/llama-
 # Clone llama.cpp repository
 RUN git clone https://github.com/ggml-org/llama.cpp.git
 
+# Provide libcuda stubs for compilation since it is missing in devel images
+RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1
+
 # Build llama.cpp with ALL architectures including Blackwell
 WORKDIR /src/llama.cpp
 RUN cmake -B build \
