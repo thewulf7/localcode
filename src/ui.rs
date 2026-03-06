@@ -490,7 +490,7 @@ mod tests {
         let profile = HardwareProfile {
             vram_gb: 16.0,
             ram_gb: 32.0,
-            compute_capability: ComputeCapability::High,
+            compute_capability: crate::profiling::ComputeCapability::High,
             recommended_models: vec![],
             recommended_combos: vec![],
         };
