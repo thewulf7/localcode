@@ -91,7 +91,7 @@ impl LlamaServerArgs {
         }
 
         let mut extra_args = HashMap::new();
-        extra_args.insert("--slot-save-path".to_string(), serde_json::json!("/models"));
+        extra_args.insert("slot-save-path".to_string(), serde_json::json!("/models"));
 
         LlamaServerArgs {
             ctx_size: Some(ctx_size),
