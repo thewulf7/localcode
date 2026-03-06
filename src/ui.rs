@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(args.flash_attn, Some("auto".to_string()));
         assert_eq!(args.cache_type_k, Some("q8_0".to_string()));
         assert_eq!(
-            args.extra_args.get("--slot-save-path").unwrap(),
+            args.extra_args.get("slot-save-path").unwrap(),
             &serde_json::json!("/models")
         );
     }
