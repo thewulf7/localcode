@@ -308,8 +308,9 @@ pub fn prompt_user(
             .recommended_combos
             .iter()
             .filter(|c| {
-                c.standard_model.category.contains("Code")
-                    || c.autocomplete_model.category.contains("Code")
+                (c.standard_model.category.contains("Code")
+                    || c.autocomplete_model.category.contains("Code"))
+                    && c.standard_model.name.to_lowercase().contains("instruct")
             })
             .map(|c| format!("{} (Score: {:.1})", c.name, c.score))
             .collect()
@@ -317,7 +318,7 @@ pub fn prompt_user(
         profile
             .recommended_models
             .iter()
-            .filter(|m| m.category.contains("Code"))
+            .filter(|m| m.category.contains("Code") && m.name.to_lowercase().contains("instruct"))
             .map(|m| {
                 format!(
                     "{} (Score: {:.1}, Quant: {})",
@@ -326,7 +327,11 @@ pub fn prompt_user(
             })
             .collect()
     } else {
-        AVAILABLE_MODELS.iter().map(|&s| s.to_string()).collect()
+        AVAILABLE_MODELS
+            .iter()
+            .filter(|m| m.to_lowercase().contains("instruct") || m.to_lowercase().contains("-it"))
+            .map(|&s| s.to_string())
+            .collect()
     };
 
     let mut default_indices = Vec::new();
