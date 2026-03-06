@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1.7
+# Custom llama.cpp + llama-swap image built from source with Blackwell (120) support
+# Tested on: CUDA 12.8
+
+ARG CUDA_VERSION=12.8.0
+ARG UBUNTU_VERSION=22.04
+ARG BASE_DEVEL_IMAGE="nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}"
+ARG BASE_RUNTIME_IMAGE="nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}"
+
+# 1. BUILDER STAGE
+FROM ${BASE_DEVEL_IMAGE} AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Download and extract the latest llama-swap binary
+ARG LS_VER=170
+ARG LS_REPO=mostlygeek/llama-swap
+RUN wget -qO- "https://github.com/${LS_REPO}/releases/download/v${LS_VER}/llama-swap_${LS_VER}_linux_amd64.tar.gz" | tar -xz && \
+    chmod +x llama-swap
+
+# Clone llama.cpp repository
+RUN git clone https://github.com/ggml-org/llama.cpp.git
+
+# Build llama.cpp with ALL architectures including Blackwell
+WORKDIR /src/llama.cpp
+RUN cmake -B build \
+    -DGGML_CUDA=ON \
+    -DGGML_NATIVE=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES="50;52;61;70;75;80;86;89;90;120;120a" \
+    && cmake --build build --config Release -j $(nproc)
+
+
+# 2. RUNTIME STAGE
+FROM ${BASE_RUNTIME_IMAGE} AS runtime
+
+# Install basic runtime dependencies (such as libgomp which llama.cpp needs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the server component from the llama.cpp build
+COPY --from=builder /src/llama.cpp/build/bin/llama-server .
+
+# Copy the wrapper component from the downloader
+COPY --from=builder /src/llama-swap .
+
+# Set up volume defaults
+VOLUME [ "/models" ]
+ENV PORT=8080
+
+EXPOSE 8080
+
+ENTRYPOINT [ "/app/llama-swap", "-config", "/app/config.yaml" ]

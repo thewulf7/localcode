@@ -235,7 +235,7 @@ pub async fn start_llama_swap_docker(
         volume_mapping,
         "-v".to_string(),
         config_mount,
-        "ghcr.io/mostlygeek/llama-swap:cuda".to_string(),
+        "ghcr.io/thewulf7/localcode:cuda-latest".to_string(),
     ];
 
     let mut output = Command::new("docker").args(&args).output().await?;
@@ -270,7 +270,7 @@ pub async fn start_llama_swap_docker(
             }
             if let Some(pos) = args
                 .iter()
-                .position(|x| x == "ghcr.io/mostlygeek/llama-swap:cuda")
+                .position(|x| x == "ghcr.io/thewulf7/localcode:cuda-latest")
             {
                 args[pos] = "ghcr.io/mostlygeek/llama-swap:cpu".to_string();
             }
