@@ -140,7 +140,7 @@ pub async fn start_llama_swap_docker(
     port: u16,
     llama_server_args: Option<&crate::ui::LlamaServerArgs>,
 ) -> Result<()> {
-    println!("📦 Pulling ghcr.io/mostlygeek/llama-swap:cuda... (This may take a moment)");
+    println!("📦 Launching localcode container...");
 
     // First, verify docker is installed
     let docker_check = Command::new("docker")
@@ -211,6 +211,11 @@ pub async fn start_llama_swap_docker(
         for model_name in autocomplete_models {
             yaml_content.push_str(&format!("      - {}\n", model_name));
         }
+    }
+
+    yaml_content.push_str("\nhooks:\n  on_startup:\n    preload:\n");
+    for m in models {
+        yaml_content.push_str(&format!("      - {}\n", m.name));
     }
 
     let config_path = models_dir.join("llama-swap.yaml");
