@@ -248,9 +248,8 @@ async fn main() -> Result<()> {
                 .await?;
 
             // 5. Download default skills
-            if !is_project_scoped {
-                config::download_initial_skills(&user_config.selected_skills).await?;
-            }
+            config::download_initial_skills(&user_config.selected_skills, is_project_scoped)
+                .await?;
 
             // 6. Save configuration to disk
             config::save_localcode_config(&user_config, is_project_scoped).await?;

@@ -32,8 +32,8 @@ impl LlamaServerArgs {
 
         let ctx_size = if has_gpu {
             if profile.vram_gb >= 24.0 {
-                32768
-            } else if profile.vram_gb >= 16.0 {
+                65536
+            } else if profile.vram_gb >= 14.0 {
                 16384
             } else if profile.vram_gb >= 12.0 {
                 8192
@@ -97,7 +97,7 @@ impl LlamaServerArgs {
             ctx_size: Some(ctx_size),
             n_gpu_layers: Some(n_gpu_layers),
             flash_attn: Some(if has_gpu {
-                "auto".to_string()
+                "on".to_string()
             } else {
                 "off".to_string()
             }),
@@ -501,7 +501,7 @@ mod tests {
         let args = LlamaServerArgs::from_hardware(&profile, &models);
         assert_eq!(args.ctx_size, Some(16384));
         assert_eq!(args.n_gpu_layers, Some(999));
-        assert_eq!(args.flash_attn, Some("auto".to_string()));
+        assert_eq!(args.flash_attn, Some("on".to_string()));
         assert_eq!(args.cache_type_k, Some("q8_0".to_string()));
         assert_eq!(
             args.extra_args.get("slot-save-path").unwrap(),

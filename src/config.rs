@@ -129,13 +129,18 @@ pub async fn load_localcode_config() -> Result<crate::ui::InitConfig> {
     Ok(config)
 }
 
-pub async fn download_initial_skills(selected_skills: &[String]) -> Result<()> {
+pub async fn download_initial_skills(selected_skills: &[String], is_project: bool) -> Result<()> {
     if selected_skills.is_empty() {
         return Ok(());
     }
 
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let skills_dir = home_dir.join(".opencode").join("skills");
+    let target_dir = if is_project {
+        PathBuf::from(".opencode")
+    } else {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home_dir.join(".opencode")
+    };
+    let skills_dir = target_dir.join("skills");
 
     if !skills_dir.exists() {
         fs::create_dir_all(&skills_dir).await?;
@@ -178,5 +183,12 @@ mod tests {
         let skills = get_available_skills();
         // Just verify it doesn't crash and returns the context7 folder we know exists in our tree based on UI selection choices
         assert!(skills.contains(&"context7".to_string()));
+    }
+
+    #[test]
+    fn test_print_embedded_paths() {
+        for file in SkillsAssets::iter() {
+            println!("EMBED: {}", file.as_ref());
+        }
     }
 }
