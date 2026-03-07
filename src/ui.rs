@@ -430,6 +430,7 @@ pub fn display_config_instructions(config: &InitConfig) {
         .models
         .iter()
         .find(|m| !crate::runner::is_autocomplete_model(&m.name))
+        .or_else(|| config.models.first())
         .map(|m| m.name.clone())
         .unwrap_or_else(|| "default".to_string());
 
@@ -459,10 +460,6 @@ pub fn display_config_instructions(config: &InitConfig) {
     println!("      \"models\": {{");
     println!("        \"{}\": {{", standard_model);
     println!("          \"name\": \"{}\",", standard_model);
-    println!("          \"limit\": {{");
-    println!("            \"context\": {},", ctx_size);
-    println!("            \"output\": 4096");
-    println!("          }}");
     println!("        }}");
     println!("      }},");
     println!("      \"name\": \"LocalCode\",");
