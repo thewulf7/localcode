@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 
 # Download and extract the latest llama-swap binary
-ARG LS_VER=170
+ARG LS_VER=197
 ARG LS_REPO=mostlygeek/llama-swap
 RUN wget -qO- "https://github.com/${LS_REPO}/releases/download/v${LS_VER}/llama-swap_${LS_VER}_linux_amd64.tar.gz" | tar -xz && \
     chmod +x llama-swap
