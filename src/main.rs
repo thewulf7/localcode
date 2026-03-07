@@ -30,6 +30,8 @@ pub enum Commands {
     Status,
     /// Stop the background LLM server
     Stop,
+    /// Show configuration instructions for OpenCode and Claude Code
+    Info,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -247,11 +249,7 @@ async fn main() -> Result<()> {
             config::configure_opencode(&user_config.models, &provider_url, is_project_scoped)
                 .await?;
 
-            // 5. Download default skills
-            config::download_initial_skills(&user_config.selected_skills, is_project_scoped)
-                .await?;
-
-            // 6. Save configuration to disk
+            // 5. Save configuration to disk
             config::save_localcode_config(&user_config, is_project_scoped).await?;
 
             let scope_str = if is_project_scoped {
@@ -275,7 +273,22 @@ async fn main() -> Result<()> {
                     .white()
                     .bold()
             );
+
+            ui::display_config_instructions(&user_config);
         }
+        Commands::Info => match config::load_localcode_config().await {
+            Ok(config) => {
+                ui::display_config_instructions(&config);
+            }
+            Err(e) => {
+                println!(
+                    "\n{} {}",
+                    style("❌ Error loading configuration:").red().bold(),
+                    e
+                );
+                println!("  Try running `localcode init` first.");
+            }
+        },
     }
 
     Ok(())

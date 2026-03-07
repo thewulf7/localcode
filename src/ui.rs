@@ -149,7 +149,6 @@ impl LlamaServerArgs {
 pub struct InitConfig {
     pub models: Vec<ModelSelection>,
     pub run_in_docker: bool,
-    pub selected_skills: Vec<String>,
     pub models_dir: String,
     pub port: u16,
     #[serde(default)]
@@ -161,7 +160,6 @@ impl Default for InitConfig {
         Self {
             models: Vec::new(),
             run_in_docker: true,
-            selected_skills: Vec::new(),
             models_dir: "~/.opencode/models".to_string(),
             port: 8080,
             llama_server_args: None,
@@ -178,8 +176,6 @@ const AVAILABLE_MODELS: &[&str] = &[
     "qwen2-7b-instruct",
     "mistral-7b-instruct",
 ];
-
-const AVAILABLE_SKILLS: &[&str] = &["context7"];
 
 pub fn prompt_user(
     args: &crate::InitArgs,
@@ -266,7 +262,6 @@ pub fn prompt_user(
             InitConfig {
                 models,
                 run_in_docker: !args.no_docker,
-                selected_skills: AVAILABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
                 models_dir: args
                     .models_dir
                     .as_ref()
@@ -407,15 +402,6 @@ pub fn prompt_user(
         .with_help_message("This will automatically download and start the model without installing extra dependencies natively.")
         .prompt()?;
 
-    // Fetch embedded skills dynamically
-    let mut available_skills = crate::config::get_available_skills();
-
-    // Attempt to prioritize context7 at the top
-    if let Some(idx) = available_skills.iter().position(|s| s == "context7") {
-        let context7 = available_skills.remove(idx);
-        available_skills.insert(0, context7);
-    }
-
     let default_models_dir = args
         .models_dir
         .as_ref()
@@ -426,26 +412,52 @@ pub fn prompt_user(
         .with_default(&default_models_dir)
         .prompt()?;
 
-    let default_indices = (0..available_skills.len()).collect::<Vec<_>>();
-    let selected_skills = inquire::MultiSelect::new(
-        "Select initial OpenCode skills to install:",
-        available_skills.clone(),
-    )
-    .with_default(&default_indices)
-    .with_help_message("Use Space to select/deselect, Enter to confirm.")
-    .prompt()?;
-
     Ok((
         InitConfig {
             models: selected_models.clone(),
             run_in_docker,
-            selected_skills,
             models_dir: models_dir_str,
             port: args.port,
             llama_server_args: Some(LlamaServerArgs::from_hardware(profile, &selected_models)),
         },
         is_project_scoped,
     ))
+}
+
+pub fn display_config_instructions(config: &InitConfig) {
+    let provider_url = format!("http://localhost:{}/v1", config.port);
+    let standard_model = config
+        .models
+        .iter()
+        .find(|m| !crate::runner::is_autocomplete_model(&m.name))
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    println!(
+        "\n{}",
+        crate::style("⚙️ Configuration Instructions").bold().cyan()
+    );
+
+    println!("\n{}", crate::style("--- OpenCode ---").bold().yellow());
+    println!("To use your local server in OpenCode, update your `opencode.json`:");
+    println!("{{");
+    println!("  \"llm\": {{");
+    println!("    \"provider\": \"custom\",");
+    println!("    \"model\": \"{}\",", standard_model);
+    println!("    \"api_base\": \"{}\"", provider_url);
+    println!("  }}");
+    println!("}}");
+
+    println!("\n{}", crate::style("--- Claude Code ---").bold().yellow());
+    println!("To use your local server with Claude Code, run these commands in your terminal:");
+    let shell_cmd = if cfg!(target_os = "windows") {
+        "set"
+    } else {
+        "export"
+    };
+    println!("{} ANTHROPIC_BASE_URL=\"{}\"", shell_cmd, provider_url);
+    println!("{} ANTHROPIC_API_KEY=\"sk-localcode\"", shell_cmd);
+    println!("claude");
 }
 
 #[cfg(test)]
@@ -479,7 +491,6 @@ mod tests {
                 quant: None,
             }],
             run_in_docker: true,
-            selected_skills: vec!["context7".to_string()],
             models_dir: "/tmp/models".to_string(),
             port: 8080,
             llama_server_args: None,
@@ -487,7 +498,6 @@ mod tests {
         let serialized = serde_json::to_string(&config).unwrap();
         assert!(serialized.contains("run_in_docker"));
         assert!(serialized.contains(r#""port":8080"#));
-        assert!(serialized.contains("context7"));
     }
 
     #[test]
