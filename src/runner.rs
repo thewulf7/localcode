@@ -163,7 +163,8 @@ pub async fn start_llama_swap_docker(
         .await;
 
     // Generate config.yaml for llama-swap
-    let mut yaml_content = String::from("includeAliasesInList: true\nsendLoadingState: true\n\nmodels:\n");
+    let mut yaml_content =
+        String::from("includeAliasesInList: true\nsendLoadingState: true\n\nmodels:\n");
     let mut autocomplete_models = Vec::new();
 
     for m in models {
@@ -339,7 +340,8 @@ pub async fn stop_server() -> Result<()> {
 
     println!(
         "{}",
-        style("🛑 Stopping and removing local LLM container (models are preserved on disk)...").yellow()
+        style("🛑 Stopping and removing local LLM container (models are preserved on disk)...")
+            .yellow()
     );
 
     let status = Command::new("docker")
