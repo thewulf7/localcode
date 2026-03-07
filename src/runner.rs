@@ -204,6 +204,18 @@ pub async fn start_llama_swap_docker(
             "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 {}\n",
             source_args, custom_args
         ));
+
+        if !is_autocomplete {
+            yaml_content.push_str("    aliases:\n");
+            yaml_content.push_str("      - \"claude-3-5-sonnet-20241022\"\n");
+            yaml_content.push_str("      - \"claude-3-5-sonnet-latest\"\n");
+            yaml_content.push_str("      - \"claude-3-5-haiku-20241022\"\n");
+            yaml_content.push_str("      - \"claude-3-5-haiku-latest\"\n");
+            yaml_content.push_str("      - \"claude-3-opus-20240229\"\n");
+            yaml_content.push_str("      - \"claude-3-sonnet-20240229\"\n");
+            yaml_content.push_str("      - \"claude-3-haiku-20240307\"\n");
+            yaml_content.push_str("      - \"claude-sonnet-4-6\"\n");
+        }
     }
 
     if !autocomplete_models.is_empty() {

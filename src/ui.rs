@@ -442,12 +442,6 @@ pub fn display_config_instructions(config: &InitConfig) {
     println!("\n{}", crate::style("--- OpenCode ---").bold().yellow());
     println!("To use your local server in OpenCode, update your `opencode.json`:");
 
-    let ctx_size = config
-        .llama_server_args
-        .as_ref()
-        .and_then(|a| a.ctx_size)
-        .unwrap_or(32768);
-
     println!("{{");
     println!("  \"$schema\": \"https://opencode.ai/config.json\",");
     println!("  \"compaction\": {{");
