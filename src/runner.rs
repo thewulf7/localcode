@@ -175,14 +175,17 @@ pub async fn start_llama_swap_docker(
         String::from("includeAliasesInList: true\nsendLoadingState: true\n\nmodels:\n");
     let mut autocomplete_models = Vec::new();
 
+    let mut assigned_aliases = false;
     for m in models {
         let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
 
-        yaml_content.push_str(&format!("  {}:\n", m.name));
+        // Quote the model name key to handle slashes or special chars safely in YAML
+        yaml_content.push_str(&format!("  \"{}\":\n", m.name));
 
         let is_autocomplete = is_autocomplete_model(&m.name);
 
-        if is_autocomplete {
+        // Only add to autocomplete group if it's NOT the primary model (assigned_aliases is true after the first)
+        if assigned_aliases && is_autocomplete {
             autocomplete_models.push(m.name.clone());
         }
 
@@ -205,28 +208,31 @@ pub async fn start_llama_swap_docker(
             String::new()
         };
 
-        let custom_args = llama_server_args
+        let mut custom_args = llama_server_args
             .map(|a| a.to_cli_args())
             // Claude Code's system prompt + tool defs consume ~15k tokens before any
             // conversation, so 8192 is far too small. Use 32768 as the safe default.
             .unwrap_or_else(|| "--ctx-size 32768".to_string());
 
-        if is_autocomplete {
+        // Sanitize Windows absolute paths for Docker.
+        // If an arg contains a path like C:\Users\..., rewrite it to use /models/ relative to the container.
+        if custom_args.contains(':') && custom_args.contains('\\') {
+            let expanded_models_dir =
+                shellexpand::tilde(models_dir.to_str().unwrap_or("")).to_string();
+            // This is a naive but effective replacement for common local paths mapped to /models
+            custom_args = custom_args
+                .replace(&expanded_models_dir, "/models")
+                .replace('\\', "/");
+        }
+
+        if !assigned_aliases {
+            assigned_aliases = true;
             yaml_content.push_str(&format!(
-                // --jinja enables proper Jinja2 tool-call rendering required by Claude Code
-                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja {}\n",
-                source_args, custom_args
-            ));
-        } else {
-            yaml_content.push_str(&format!(
-                // Non-autocomplete (main) models use the embedded Claude Code Jinja template.
+                // Main models use the embedded Claude Code Jinja template.
                 // --chat-template-file is mounted at /models/claude-code.jinja inside the container.
                 "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --chat-template-file /models/claude-code.jinja {}\n",
                 source_args, custom_args
             ));
-        }
-
-        if !is_autocomplete {
             // strip_params: prevent Claude Code from overriding local model's
             // sampling settings (temperature, top_k, etc.) which degrades quality.
             yaml_content.push_str("    filters:\n");
@@ -250,6 +256,12 @@ pub async fn start_llama_swap_docker(
             yaml_content.push_str("      - \"claude-opus-4-5-20251101\"\n");
             yaml_content.push_str("      - \"claude-haiku-4-5\"\n");
             yaml_content.push_str("      - \"claude-haiku-4-5-20251001\"\n");
+        } else {
+            yaml_content.push_str(&format!(
+                // Secondary/autocomplete models use standard llama-server settings.
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja {}\n",
+                source_args, custom_args
+            ));
         }
     }
 
@@ -397,11 +409,7 @@ pub async fn stop_server() -> Result<()> {
 // Ensure the helper grouping heuristic is standalone so we can cleanly test it
 pub fn is_autocomplete_model(model_name: &str) -> bool {
     let lower = model_name.to_lowercase();
-    lower.contains("mini")
-        || lower.contains("coder")
-        || lower.contains("1.5b")
-        || lower.contains("2b")
-        || lower.contains("0.5b")
+    lower.contains("mini") || lower.contains("1.5b") || lower.contains("0.5b")
 }
 
 #[cfg(test)]
