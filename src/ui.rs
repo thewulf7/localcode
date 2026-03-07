@@ -116,10 +116,10 @@ impl LlamaServerArgs {
         if let Some(v) = self.n_gpu_layers {
             args.push_str(&format!(" --n-gpu-layers {}", v));
         }
-        if let Some(v) = &self.flash_attn
-            && !v.is_empty()
-        {
-            args.push_str(&format!(" --flash-attn {}", v));
+        if let Some(v) = &self.flash_attn {
+            if !v.is_empty() {
+                args.push_str(&format!(" --flash-attn {}", v));
+            }
         }
         if let Some(v) = &self.cache_type_k {
             args.push_str(&format!(" --cache-type-k {}", v));

@@ -21,18 +21,21 @@ pub fn scan_directory_for_gguf(dir: &Path, source_name: &str) -> Vec<DiscoveredM
 
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file()
-            && let Some(ext) = path.extension()
-            && ext == "gguf"
-            && let Ok(metadata) = fs::metadata(path)
-            && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-        {
-            found.push(DiscoveredModel {
-                name: file_name.to_string(),
-                path: path.to_path_buf(),
-                size_bytes: metadata.len(),
-                source: source_name.to_string(),
-            });
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "gguf" {
+                    if let Ok(metadata) = fs::metadata(path) {
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            found.push(DiscoveredModel {
+                                name: file_name.to_string(),
+                                path: path.to_path_buf(),
+                                size_bytes: metadata.len(),
+                                source: source_name.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
     found
@@ -68,49 +71,56 @@ pub fn scan_ollama_cache() -> Vec<DiscoveredModel> {
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
-        if path.is_file()
-            && let Ok(content) = fs::read_to_string(path)
-            && let Ok(json) = serde_json::from_str::<Value>(&content)
-        {
-            // Look for layers
-            if let Some(layers) = json.get("layers").and_then(|l| l.as_array()) {
-                for layer in layers {
-                    if let Some(media_type) = layer.get("mediaType").and_then(|m| m.as_str())
-                        && media_type == "application/vnd.ollama.image.model"
-                        && let Some(digest) = layer.get("digest").and_then(|d| d.as_str())
-                    {
-                        // The blob is named exactly after the digest but with sha256- prefix
-                        // Some systems use `:` separator, Ollama locally uses `-`
-                        let blob_name = digest.replace(":", "-");
-                        let blob_path = blobs_dir.join(&blob_name);
+        if path.is_file() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(json) = serde_json::from_str::<Value>(&content) {
+                    // Look for layers
+                    if let Some(layers) = json.get("layers").and_then(|l| l.as_array()) {
+                        for layer in layers {
+                            if let Some(media_type) = layer.get("mediaType").and_then(|m| m.as_str()) {
+                                if media_type == "application/vnd.ollama.image.model" {
+                                    if let Some(digest) = layer.get("digest").and_then(|d| d.as_str()) {
+                                        // The blob is named exactly after the digest but with sha256- prefix
+                                        // Some systems use `:` separator, Ollama locally uses `-`
+                                        let blob_name = digest.replace(":", "-");
+                                        let blob_path = blobs_dir.join(&blob_name);
 
-                        if blob_path.exists()
-                            && let Ok(metadata) = fs::metadata(&blob_path)
-                        {
-                            // Extract model name from the directory structure if possible
-                            // e.g. ~/.ollama/models/manifests/registry.ollama.ai/library/llama3/8b/latest
-                            let mut model_name = "Ollama-Model".to_string();
-                            if let Some(parent) = path.parent()
-                                && let Some(repo_name) = parent
-                                    .parent()
-                                    .and_then(|p| p.file_name())
-                                    .and_then(|f| f.to_str())
-                                && let Some(tag_name) = parent.file_name().and_then(|f| f.to_str())
-                            {
-                                let final_tag = path
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_str()
-                                    .unwrap_or("latest");
-                                model_name = format!("{}:{}-{}", repo_name, tag_name, final_tag);
+                                        if blob_path.exists() {
+                                            if let Ok(metadata) = fs::metadata(&blob_path) {
+                                                // Extract model name from the directory structure if possible
+                                                // e.g. ~/.ollama/models/manifests/registry.ollama.ai/library/llama3/8b/latest
+                                                let mut model_name = "Ollama-Model".to_string();
+                                                if let Some(parent) = path.parent() {
+                                                    if let Some(repo_name) = parent
+                                                        .parent()
+                                                        .and_then(|p| p.file_name())
+                                                        .and_then(|f| f.to_str())
+                                                    {
+                                                        if let Some(tag_name) =
+                                                            parent.file_name().and_then(|f| f.to_str())
+                                                        {
+                                                            let final_tag = path
+                                                                .file_name()
+                                                                .unwrap_or_default()
+                                                                .to_str()
+                                                                .unwrap_or("latest");
+                                                            model_name =
+                                                                format!("{}:{}-{}", repo_name, tag_name, final_tag);
+                                                        }
+                                                    }
+                                                }
+
+                                                found.push(DiscoveredModel {
+                                                    name: model_name,
+                                                    path: blob_path,
+                                                    size_bytes: metadata.len(),
+                                                    source: "Ollama".to_string(),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
                             }
-
-                            found.push(DiscoveredModel {
-                                name: model_name,
-                                path: blob_path,
-                                size_bytes: metadata.len(),
-                                source: "Ollama".to_string(),
-                            });
                         }
                     }
                 }

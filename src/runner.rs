@@ -118,17 +118,19 @@ pub async fn download_models(
 fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<String> {
     use walkdir::WalkDir;
     for entry in WalkDir::new(models_dir).into_iter().filter_map(|e| e.ok()) {
-        if entry.path().is_file()
-            && entry
+        if entry.path().is_file() {
+            let is_match = entry
                 .path()
                 .file_name()
                 .and_then(|n| n.to_str())
                 .map(|n| n == filename)
-                .unwrap_or(false)
-            && let Ok(rel) = entry.path().strip_prefix(models_dir)
-        {
-            // Use forward slashes for the Linux container path
-            return Some(rel.to_string_lossy().replace('\\', "/"));
+                .unwrap_or(false);
+            if is_match {
+                if let Ok(rel) = entry.path().strip_prefix(models_dir) {
+                    // Use forward slashes for the Linux container path
+                    return Some(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
         }
     }
     None
