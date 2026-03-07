@@ -3,6 +3,10 @@ use anyhow::{Context, Result};
 use hf_hub::api::sync::ApiBuilder;
 use tokio::process::Command;
 
+/// Claude Code Jinja chat template embedded at compile time.
+/// Handles the XML/JSON tool-call format Claude Code expects.
+const CLAUDE_CODE_JINJA: &str = include_str!("claude_code.jinja");
+
 pub async fn extract_hf_repo_and_file(
     model_name: &str,
     quant: &Option<String>,
@@ -162,6 +166,10 @@ pub async fn start_llama_swap_docker(
         .output()
         .await;
 
+    // Write the embedded Jinja template to disk next to the YAML so llama-server can use it.
+    let jinja_path = models_dir.join("claude-code.jinja");
+    tokio::fs::write(&jinja_path, CLAUDE_CODE_JINJA).await?;
+
     // Generate config.yaml for llama-swap
     let mut yaml_content =
         String::from("includeAliasesInList: true\nsendLoadingState: true\n\nmodels:\n");
@@ -203,11 +211,20 @@ pub async fn start_llama_swap_docker(
             // conversation, so 8192 is far too small. Use 32768 as the safe default.
             .unwrap_or_else(|| "--ctx-size 32768".to_string());
 
-        yaml_content.push_str(&format!(
-            // --jinja enables proper Jinja2 tool-call rendering required by Claude Code
-            "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja {}\n",
-            source_args, custom_args
-        ));
+        if is_autocomplete {
+            yaml_content.push_str(&format!(
+                // --jinja enables proper Jinja2 tool-call rendering required by Claude Code
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja {}\n",
+                source_args, custom_args
+            ));
+        } else {
+            yaml_content.push_str(&format!(
+                // Non-autocomplete (main) models use the embedded Claude Code Jinja template.
+                // --chat-template-file is mounted at /models/claude-code.jinja inside the container.
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --chat-template-file /models/claude-code.jinja {}\n",
+                source_args, custom_args
+            ));
+        }
 
         if !is_autocomplete {
             // strip_params: prevent Claude Code from overriding local model's
