@@ -68,7 +68,6 @@ During setup you will be prompted to choose:
 - **Models** — Picked from hardware-profiled recommendations filtered for coding tasks.
 - **Docker** — Whether to use the Docker-based llama.cpp backend.
 - **Models directory** — Where to store downloaded GGUF weights.
-- **Skills** — Optional OpenCode skill packs to install.
 
 **Headless Setup (CI/CD / Automation):**
 ```bash
@@ -188,6 +187,85 @@ The `llama_server_args` key in `localcode.json` controls how the llama.cpp backe
 ```
 
 Any additional key-value pairs are passed through directly as `--key value` flags to the llama.cpp server.
+
+---
+
+## 🔌 Client Configuration
+
+Once the server is running, you can connect your favorite AI-powered coding tools.
+
+### 1. OpenCode
+
+To use your local server in OpenCode, update your `opencode.json` (found in `~/.opencode/config.json` or your project's `.opencode/config.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 3000
+  },
+  "provider": {
+    "localcode": {
+      "models": {
+        "your-model-name": {
+          "name": "your-model-name",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        }
+      },
+      "name": "LocalCode",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "provider": "openai",
+        "baseURL": "http://localhost:8080/v1"
+      }
+    }
+  }
+}
+```
+
+### 2. Claude Code
+
+LocalCode natively supports the Anthropic Messages API. To use it with Claude Code, set the following environment variables in your terminal:
+
+**macOS / Linux:**
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:8080/v1"
+export ANTHROPIC_API_KEY="sk-localcode"
+claude
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:ANTHROPIC_BASE_URL="http://localhost:8080/v1"
+$env:ANTHROPIC_API_KEY="sk-localcode"
+claude
+```
+
+> [!TIP]
+> Run `localcode info` anytime to see your current configuration and copy-paste these commands!
+
+
+---
+
+## 🧠 Advanced: Custom Skills (Recommended)
+
+To provide your local models with better tool-use capabilities and project awareness, we recommend adding specific skills to your client.
+
+### Manual Installation for OpenCode
+
+Since large skill banks can sometimes exceed local context windows, we recommend manually copying specific skills into your `.opencode` directory:
+
+1. Create a `skills` folder if it doesn't exist: `mkdir .opencode/skills`
+2. Download or copy your desired `.md` or `.json` skills into that folder.
+3. Restart your OpenCode session.
+
+> [!TIP]
+> Use the **context7** skill to provide high-fidelity project navigation and structure awareness to your local model. You can find reference skills in the `skills/` directory of this repository.
 
 ---
 

@@ -440,13 +440,41 @@ pub fn display_config_instructions(config: &InitConfig) {
 
     println!("\n{}", crate::style("--- OpenCode ---").bold().yellow());
     println!("To use your local server in OpenCode, update your `opencode.json`:");
+
+    let ctx_size = config
+        .llama_server_args
+        .as_ref()
+        .and_then(|a| a.ctx_size)
+        .unwrap_or(32768);
+
     println!("{{");
-    println!("  \"llm\": {{");
-    println!("    \"provider\": \"custom\",");
-    println!("    \"model\": \"{}\",", standard_model);
-    println!("    \"api_base\": \"{}\"", provider_url);
+    println!("  \"$schema\": \"https://opencode.ai/config.json\",");
+    println!("  \"compaction\": {{");
+    println!("    \"auto\": true,");
+    println!("    \"prune\": true,");
+    println!("    \"reserved\": 3000");
+    println!("  }},");
+    println!("  \"provider\": {{");
+    println!("    \"localcode\": {{");
+    println!("      \"models\": {{");
+    println!("        \"{}\": {{", standard_model);
+    println!("          \"name\": \"{}\",", standard_model);
+    println!("          \"limit\": {{");
+    println!("            \"context\": {},", ctx_size);
+    println!("            \"output\": 4096");
+    println!("          }}");
+    println!("        }}");
+    println!("      }},");
+    println!("      \"name\": \"LocalCode\",");
+    println!("      \"npm\": \"@ai-sdk/openai-compatible\",");
+    println!("      \"options\": {{");
+    println!("        \"provider\": \"openai\",");
+    println!("        \"baseURL\": \"{}\"", provider_url);
+    println!("      }}");
+    println!("    }}");
     println!("  }}");
     println!("}}");
+
 
     println!("\n{}", crate::style("--- Claude Code ---").bold().yellow());
     println!("To use your local server with Claude Code, run these commands in your terminal:");
