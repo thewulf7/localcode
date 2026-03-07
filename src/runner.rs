@@ -339,7 +339,7 @@ pub async fn stop_server() -> Result<()> {
 
     println!(
         "{}",
-        style("🛑 Stopping and removing local LLM Docker container...").yellow()
+        style("🛑 Stopping and removing local LLM container (models are preserved on disk)...").yellow()
     );
 
     let status = Command::new("docker")
@@ -351,7 +351,7 @@ pub async fn stop_server() -> Result<()> {
         println!(
             "{} {}",
             style("✓").green().bold(),
-            style("Server stopped successfully.").green()
+            style("Server stopped and container removed.").green()
         );
     }
 
