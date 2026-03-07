@@ -150,10 +150,15 @@ async fn main() -> Result<()> {
                 if let Err(e) = runner::download_models(&config.models, &models_dir).await {
                     println!(
                         "\n{} {}",
-                        style("❌ Failed to download models:").red().bold(),
+                        style("⚠️  Download step failed (models may already be cached):")
+                            .yellow()
+                            .bold(),
                         e
                     );
-                    std::process::exit(1);
+                    println!(
+                        "  {}",
+                        style("Continuing with locally available models...").dim()
+                    );
                 }
 
                 if let Err(e) = runner::start_llama_swap_docker(

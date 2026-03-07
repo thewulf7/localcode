@@ -199,15 +199,24 @@ pub async fn start_llama_swap_docker(
 
         let custom_args = llama_server_args
             .map(|a| a.to_cli_args())
-            .unwrap_or_else(|| "--ctx-size 8192".to_string());
+            // Claude Code's system prompt + tool defs consume ~15k tokens before any
+            // conversation, so 8192 is far too small. Use 32768 as the safe default.
+            .unwrap_or_else(|| "--ctx-size 32768".to_string());
 
         yaml_content.push_str(&format!(
-            "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 {}\n",
+            // --jinja enables proper Jinja2 tool-call rendering required by Claude Code
+            "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja {}\n",
             source_args, custom_args
         ));
 
         if !is_autocomplete {
+            // strip_params: prevent Claude Code from overriding local model's
+            // sampling settings (temperature, top_k, etc.) which degrades quality.
+            yaml_content.push_str("    filters:\n");
+            yaml_content
+                .push_str("      strip_params: \"temperature, top_k, top_p, repeat_penalty\"\n");
             yaml_content.push_str("    aliases:\n");
+            // Claude 3.5 series
             yaml_content.push_str("      - \"claude-3-5-sonnet-20241022\"\n");
             yaml_content.push_str("      - \"claude-3-5-sonnet-latest\"\n");
             yaml_content.push_str("      - \"claude-3-5-haiku-20241022\"\n");
@@ -215,7 +224,15 @@ pub async fn start_llama_swap_docker(
             yaml_content.push_str("      - \"claude-3-opus-20240229\"\n");
             yaml_content.push_str("      - \"claude-3-sonnet-20240229\"\n");
             yaml_content.push_str("      - \"claude-3-haiku-20240307\"\n");
+            // Claude 4 series — Claude Code 2.x sends these model IDs
+            yaml_content.push_str("      - \"claude-sonnet-4-5\"\n");
+            yaml_content.push_str("      - \"claude-sonnet-4-5-20250929\"\n");
             yaml_content.push_str("      - \"claude-sonnet-4-6\"\n");
+            yaml_content.push_str("      - \"claude-sonnet-4-latest\"\n");
+            yaml_content.push_str("      - \"claude-opus-4-5\"\n");
+            yaml_content.push_str("      - \"claude-opus-4-5-20251101\"\n");
+            yaml_content.push_str("      - \"claude-haiku-4-5\"\n");
+            yaml_content.push_str("      - \"claude-haiku-4-5-20251001\"\n");
         }
     }
 

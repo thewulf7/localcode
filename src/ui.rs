@@ -1,8 +1,23 @@
 use crate::profiling::HardwareProfile;
 use anyhow::Result;
 use inquire::Confirm;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+
+/// Deserialize `flash_attn` tolerating old configs that stored a boolean.
+/// `true` → `"on"`, `false` → `"off"`, string values passed through as-is.
+fn deserialize_flash_attn<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v: Option<serde_json::Value> = Option::deserialize(d)?;
+    Ok(match v {
+        None => None,
+        Some(serde_json::Value::Bool(b)) => Some(if b { "on" } else { "off" }.to_string()),
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(other) => Some(other.to_string()),
+    })
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ModelSelection {
@@ -16,7 +31,11 @@ pub struct LlamaServerArgs {
     pub ctx_size: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub n_gpu_layers: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        deserialize_with = "deserialize_flash_attn",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub flash_attn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cache_type_k: Option<String>,
@@ -425,7 +444,10 @@ pub fn prompt_user(
 }
 
 pub fn display_config_instructions(config: &InitConfig) {
-    let provider_url = format!("http://localhost:{}/v1", config.port);
+    // OpenCode uses @ai-sdk/openai-compatible which expects the full /v1 base URL.
+    let openai_base_url = format!("http://localhost:{}/v1", config.port);
+    // Claude Code appends its own /v1/messages path, so we must NOT include /v1 here.
+    let anthropic_base_url = format!("http://localhost:{}", config.port);
     let standard_model = config
         .models
         .iter()
@@ -460,7 +482,7 @@ pub fn display_config_instructions(config: &InitConfig) {
     println!("      \"npm\": \"@ai-sdk/openai-compatible\",");
     println!("      \"options\": {{");
     println!("        \"provider\": \"openai\",");
-    println!("        \"baseURL\": \"{}\"", provider_url);
+    println!("        \"baseURL\": \"{}\"", openai_base_url);
     println!("      }}");
     println!("    }}");
     println!("  }}");
@@ -473,7 +495,10 @@ pub fn display_config_instructions(config: &InitConfig) {
     } else {
         "export"
     };
-    println!("{} ANTHROPIC_BASE_URL=\"{}\"", shell_cmd, provider_url);
+    println!(
+        "{} ANTHROPIC_BASE_URL=\"{}\"",
+        shell_cmd, anthropic_base_url
+    );
     println!("{} ANTHROPIC_API_KEY=\"sk-localcode\"", shell_cmd);
     println!("claude");
 }
