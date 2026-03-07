@@ -125,9 +125,7 @@ fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<Strin
                 .and_then(|n| n.to_str())
                 .map(|n| n == filename)
                 .unwrap_or(false);
-            if is_match
-                && let Ok(rel) = entry.path().strip_prefix(models_dir)
-            {
+            if is_match && let Ok(rel) = entry.path().strip_prefix(models_dir) {
                 // Use forward slashes for the Linux container path
                 return Some(rel.to_string_lossy().replace('\\', "/"));
             }
