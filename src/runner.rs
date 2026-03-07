@@ -163,7 +163,7 @@ pub async fn start_llama_swap_docker(
         .await;
 
     // Generate config.yaml for llama-swap
-    let mut yaml_content = String::from("models:\n");
+    let mut yaml_content = String::from("includeAliasesInList: true\nsendLoadingState: true\n\nmodels:\n");
     let mut autocomplete_models = Vec::new();
 
     for m in models {
