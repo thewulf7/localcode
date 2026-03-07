@@ -475,7 +475,6 @@ pub fn display_config_instructions(config: &InitConfig) {
     println!("  }}");
     println!("}}");
 
-
     println!("\n{}", crate::style("--- Claude Code ---").bold().yellow());
     println!("To use your local server with Claude Code, run these commands in your terminal:");
     let shell_cmd = if cfg!(target_os = "windows") {
