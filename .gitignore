@@ -1,3 +1,12 @@
 /target
 .agent/
 vendor/
+llama-swap-tmp/
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+.idea/
+.vscode/
+*.iml
