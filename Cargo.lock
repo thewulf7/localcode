@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "localcode"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "clap",
