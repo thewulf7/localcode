@@ -674,6 +674,10 @@ pub fn display_config_instructions(config: &InitConfig) {
 
     println!("{{");
     println!("  \"$schema\": \"https://opencode.ai/config.json\",");
+    println!("  \"model\": \"{}\",", standard_model);
+    if let Some(ref auto_model) = autocomplete_model {
+        println!("  \"small_model\": \"{}\",", auto_model);
+    }
     println!("  \"compaction\": {{");
     println!("    \"auto\": true,");
     println!("    \"prune\": true,");
@@ -691,10 +695,6 @@ pub fn display_config_instructions(config: &InitConfig) {
         println!("        }}");
     }
     println!("      }},");
-    println!("      \"model\": \"{}\",", standard_model);
-    if let Some(ref auto_model) = autocomplete_model {
-        println!("      \"small_model\": \"{}\",", auto_model);
-    }
     println!("      \"name\": \"LocalCode\",");
     println!("      \"npm\": \"@ai-sdk/openai-compatible\",");
     println!("      \"options\": {{");

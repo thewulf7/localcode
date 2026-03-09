@@ -60,13 +60,9 @@ pub async fn configure_opencode(
             );
         }
 
-        // Build the provider config with model + small_model top-level keys
+        // Build the provider config
         let mut provider_obj = serde_json::Map::new();
         provider_obj.insert("models".to_string(), serde_json::Value::Object(models_map));
-        provider_obj.insert("model".to_string(), serde_json::json!(standard_model_name));
-        if let Some(ref auto_name) = autocomplete_model_name {
-            provider_obj.insert("small_model".to_string(), serde_json::json!(auto_name));
-        }
         provider_obj.insert("name".to_string(), serde_json::json!("LocalCode"));
         provider_obj.insert("npm".to_string(), serde_json::json!("@ai-sdk/openai-compatible"));
         provider_obj.insert(
@@ -80,6 +76,12 @@ pub async fn configure_opencode(
         // Nest under provider.localcode
         let provider = serde_json::json!({ "localcode": serde_json::Value::Object(provider_obj) });
         obj.insert("provider".to_string(), provider);
+
+        // model and small_model are root-level keys in OpenCode config
+        obj.insert("model".to_string(), serde_json::json!(standard_model_name));
+        if let Some(ref auto_name) = autocomplete_model_name {
+            obj.insert("small_model".to_string(), serde_json::json!(auto_name));
+        }
 
         // Remove legacy keys if present from older configs
         obj.remove("llm");

@@ -351,9 +351,9 @@ During `localcode init`, an `opencode/config.json` file is automatically generat
 - **Local scope**: `./.opencode/config.json`
 - **Global scope**: `~/.opencode/config.json`
 
-The config sets up a `localcode` provider with:
-- `model` — the primary reasoning model (e.g., `Qwen/Qwen2.5-Coder-7B-Instruct`)
-- `small_model` — the fast autocomplete model (e.g., `Qwen/Qwen2.5-Coder-1.5B-Instruct`), if a combo was selected during init
+The config sets up a `localcode` provider with model definitions, and places the active model selection at the root level:
+- `model` (root) — the primary reasoning model (e.g., `Qwen/Qwen2.5-Coder-7B-Instruct`)
+- `small_model` (root) — the fast autocomplete model (e.g., `Qwen/Qwen2.5-Coder-1.5B-Instruct`), if a combo was selected during init
 
 Both models point at `http://localhost:<port>/v1` and the llama-swap proxy routes requests based on the model name in the payload.
 

@@ -209,6 +209,8 @@ To use your local server in OpenCode, update your `opencode.json` (found in `~/.
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "your-model-name",
+  "small_model": "your-small-model-name",
   "compaction": {
     "auto": true,
     "prune": true,
@@ -224,8 +226,6 @@ To use your local server in OpenCode, update your `opencode.json` (found in `~/.
           "name": "your-small-model-name"
         }
       },
-      "model": "your-model-name",
-      "small_model": "your-small-model-name",
       "name": "LocalCode",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
