@@ -180,8 +180,7 @@ The `llama_server_args` key in `localcode.json` controls how the llama.cpp backe
     "flash_attn": true,
     "cache_type_k": "q8_0",
     "cache_type_v": "q8_0",
-    "prompt-cache": "/models/prompt.cache",
-    "prompt-cache-all": true
+    "slot-save-path": "/models/slots"
   }
 }
 ```

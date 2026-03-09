@@ -251,8 +251,7 @@ Downloads and replaces the current binary in-place. No package manager required.
     "flash_attn": true,
     "cache_type_k": "q8_0",
     "cache_type_v": "q8_0",
-    "prompt-cache": "/models/prompt.cache",
-    "prompt-cache-all": true
+    "slot-save-path": "/models/slots"
   }
 }
 ```
@@ -274,9 +273,10 @@ The `llama_server_args` object is translated into CLI flags for the llama.cpp se
 |-----|----------|-------------|
 | `ctx_size` | `--ctx-size` | Maximum context length in tokens |
 | `n_gpu_layers` | `--n-gpu-layers` | Number of layers to offload to GPU (`999` = all) |
-| `flash_attn` | `--flash-attn` | Enable flash attention (GPU only) |
+| `flash_attn` | `--flash-attn` | Enable flash attention (GPU only) | 
 | `cache_type_k` | `--cache-type-k` | KV cache quantization for keys (`q8_0`, `f16`) |
 | `cache_type_v` | `--cache-type-v` | KV cache quantization for values (`q8_0`, `f16`) |
+| `slot-save-path` | `--slot-save-path` | Path to save slots |
 
 **Any additional key-value pairs** in this object are passed through as `--key value` flags. Boolean `true` emits just the flag (`--mlock`); `false` is omitted. String/number values are appended as arguments.
 

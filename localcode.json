@@ -16,12 +16,11 @@
   "models_dir": "~/.local/localcode/models",
   "port": 8080,
   "llama_server_args": {
-    "ctx_size": 4096,
+    "ctx_size": 32768,
     "n_gpu_layers": 999,
     "flash_attn": true,
     "cache_type_k": "q8_0",
     "cache_type_v": "q8_0",
-    "prompt-cache-all": true,
-    "prompt-cache": "~/.local/localcode/models/prompt.cache"
+    "slot-save-path": "~/.local/localcode/models/slots"
   }
 }
