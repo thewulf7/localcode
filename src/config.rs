@@ -43,25 +43,47 @@ pub async fn configure_opencode(
     }
 
     if let Some(obj) = config.as_object_mut() {
-        obj.insert(
-            "llm".to_string(),
+        // Build the models map with both standard and autocomplete entries
+        let mut models_map = serde_json::Map::new();
+        models_map.insert(
+            standard_model_name.clone(),
             serde_json::json!({
-                "provider": "custom",
-                "model": standard_model_name,
-                "api_base": provider_url,
+                "name": standard_model_name,
             }),
         );
-
-        if let Some(auto_name) = autocomplete_model_name {
-            obj.insert(
-                "tabAutocompleteModel".to_string(),
+        if let Some(ref auto_name) = autocomplete_model_name {
+            models_map.insert(
+                auto_name.clone(),
                 serde_json::json!({
-                    "provider": "custom",
-                    "model": auto_name,
-                    "api_base": provider_url,
+                    "name": auto_name,
                 }),
             );
         }
+
+        // Build the provider config with model + small_model top-level keys
+        let mut provider_obj = serde_json::Map::new();
+        provider_obj.insert("models".to_string(), serde_json::Value::Object(models_map));
+        provider_obj.insert("model".to_string(), serde_json::json!(standard_model_name));
+        if let Some(ref auto_name) = autocomplete_model_name {
+            provider_obj.insert("small_model".to_string(), serde_json::json!(auto_name));
+        }
+        provider_obj.insert("name".to_string(), serde_json::json!("LocalCode"));
+        provider_obj.insert("npm".to_string(), serde_json::json!("@ai-sdk/openai-compatible"));
+        provider_obj.insert(
+            "options".to_string(),
+            serde_json::json!({
+                "provider": "openai",
+                "baseURL": provider_url,
+            }),
+        );
+
+        // Nest under provider.localcode
+        let provider = serde_json::json!({ "localcode": serde_json::Value::Object(provider_obj) });
+        obj.insert("provider".to_string(), provider);
+
+        // Remove legacy keys if present from older configs
+        obj.remove("llm");
+        obj.remove("tabAutocompleteModel");
     }
 
     println!(

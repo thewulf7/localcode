@@ -16,7 +16,7 @@
   "models_dir": "~/.local/localcode/models",
   "port": 8080,
   "llama_server_args": {
-    "ctx_size": 32768,
+    "ctx_size": 49152,
     "n_gpu_layers": 999,
     "flash_attn": true,
     "cache_type_k": "q8_0",

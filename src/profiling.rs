@@ -1,10 +1,16 @@
 use anyhow::Result;
+use llmfit_core::hardware::GpuBackend;
 
 pub struct HardwareProfile {
     pub vram_gb: f32,
     pub ram_gb: f32,
+    pub cpu_cores: usize,
     #[allow(dead_code)]
-    pub compute_capability: ComputeCapability,
+    pub gpu_name: Option<String>,
+    pub gpu_backend: GpuBackend,
+    #[allow(dead_code)]
+    pub gpu_count: u32,
+    pub unified_memory: bool,
     pub recommended_models: Vec<RecommendedModel>,
     pub recommended_combos: Vec<RecommendedCombo>,
 }
@@ -25,20 +31,17 @@ pub struct RecommendedModel {
     pub best_quant: String,
 }
 
-#[allow(dead_code)]
-pub enum ComputeCapability {
-    Low,
-    Medium,
-    High,
-    Ultra,
-}
-
 pub async fn profile_hardware() -> Result<HardwareProfile> {
     println!("🔍 Profiling hardware capabilities via llmfit...");
 
     let specs = llmfit_core::hardware::SystemSpecs::detect();
     let ram_gb = specs.total_ram_gb as f32;
     let vram_gb = specs.total_gpu_vram_gb.or(specs.gpu_vram_gb).unwrap_or(0.0) as f32;
+    let cpu_cores = specs.total_cpu_cores;
+    let gpu_name = specs.gpu_name.clone();
+    let gpu_backend = specs.backend;
+    let gpu_count = specs.gpu_count;
+    let unified_memory = specs.unified_memory;
 
     let db = llmfit_core::models::ModelDatabase::new();
     let models = db.models_fitting_system(
@@ -118,7 +121,11 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
     Ok(HardwareProfile {
         vram_gb,
         ram_gb,
-        compute_capability: ComputeCapability::Medium,
+        cpu_cores,
+        gpu_name,
+        gpu_backend,
+        gpu_count,
+        unified_memory,
         recommended_models,
         recommended_combos,
     })

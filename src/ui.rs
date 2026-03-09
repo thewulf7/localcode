@@ -46,21 +46,191 @@ pub struct LlamaServerArgs {
 }
 
 impl LlamaServerArgs {
-    pub fn from_hardware(profile: &HardwareProfile, models: &[ModelSelection]) -> Self {
-        let has_gpu = profile.vram_gb >= 1.0;
+    /// Parse parameter count in billions from a model name (e.g. "Qwen2.5-Coder-7B" → 7.0).
+    fn parse_params_b(name: &str) -> Option<f64> {
+        let re = regex::Regex::new(r"(?i)[-_](\d+\.?\d*)[Bb](?:[-_]|$)").ok()?;
+        re.captures(name)?.get(1)?.as_str().parse().ok()
+    }
 
-        let ctx_size = if has_gpu {
-            if profile.vram_gb >= 24.0 {
-                65536
-            } else if profile.vram_gb >= 14.0 {
-                16384
-            } else if profile.vram_gb >= 12.0 {
-                8192
-            } else if profile.vram_gb >= 8.0 {
+    /// KV cache memory multiplier relative to the f16 baseline used by llmfit.
+    fn kv_cache_multiplier(cache_type: &str) -> f64 {
+        match cache_type {
+            "q4_0" | "q4_1" => 0.25,
+            "q8_0" | "q8_1" => 0.5,
+            "f16" => 1.0,
+            "f32" => 2.0,
+            _ => 1.0,
+        }
+    }
+
+    /// Infer the native (training) context length from a model name.
+    ///
+    /// Most open-weights models embed context length in their GGUF metadata,
+    /// but at `init` time we only have the HuggingFace name. This gives us a
+    /// conservative default per model family.
+    fn native_ctx_length(model_name: &str) -> u32 {
+        let lower = model_name.to_lowercase();
+        // Qwen 2.5 series: 32768 (7B/14B) or 131072 (32B/72B)
+        if lower.contains("qwen2.5") || lower.contains("qwen-2.5") {
+            if lower.contains("32b") || lower.contains("72b") {
+                131072
+            } else {
+                32768
+            }
+        // Qwen 3 series: 40960 (all sizes)
+        } else if lower.contains("qwen3") || lower.contains("qwen-3") {
+            40960
+        // Llama 3.1/3.2/3.3 series: 131072
+        } else if lower.contains("llama-3.1") || lower.contains("llama-3.2") || lower.contains("llama-3.3") {
+            131072
+        // Llama 3 (original): 8192
+        } else if lower.contains("llama-3") || lower.contains("llama3") {
+            8192
+        // DeepSeek V2/V3/R1: 131072
+        } else if lower.contains("deepseek") {
+            131072
+        // Gemma 2: 8192
+        } else if lower.contains("gemma-2") || lower.contains("gemma2") {
+            8192
+        // Phi-3/3.5: 131072 (long) or 4096 (mini default)
+        } else if lower.contains("phi-3") || lower.contains("phi3") {
+            if lower.contains("mini") {
                 4096
             } else {
-                2048
+                131072
             }
+        // Mistral / Codestral: 32768
+        } else if lower.contains("mistral") || lower.contains("codestral") {
+            32768
+        // StarCoder2: 16384
+        } else if lower.contains("starcoder") {
+            16384
+        // Conservative fallback
+        } else {
+            32768
+        }
+    }
+
+    /// Maximum safe context extension factor via YaRN rope scaling.
+    ///
+    /// YaRN allows extending context beyond training length, but attention
+    /// quality degrades. The safe multiplier depends on model size:
+    /// - Smaller models (≤7B) have less headroom → 1.5×
+    /// - Medium models (8B–20B) → 2.0×
+    /// - Larger models (>20B) extrapolate better → 2.5×
+    fn yarn_extension_factor(params_b: f64) -> f64 {
+        if params_b <= 7.0 {
+            1.5
+        } else if params_b <= 20.0 {
+            2.0
+        } else {
+            2.5
+        }
+    }
+
+    /// Calculate the maximum context size that fits in the given VRAM budget,
+    /// capped by what the model can actually handle with acceptable quality.
+    ///
+    /// Uses the llmfit-core memory model:
+    ///   `total = params_b × bpp + 0.000008 × params_b × ctx + 0.5`
+    ///
+    /// Rearranged for VRAM-limited max_ctx:
+    ///   `max_ctx = (vram × 0.90 - params_b × bpp - 0.5) / (0.000008 × params_b × kv_mult)`
+    ///
+    /// Then capped by the quality ceiling:
+    ///   `quality_cap = native_ctx × yarn_extension_factor(params_b)`
+    pub fn calculate_max_ctx(
+        vram_gb: f64,
+        params_b: f64,
+        model_quant: &str,
+        kv_cache_type: &str,
+        model_name: &str,
+    ) -> u32 {
+        let bpp = llmfit_core::models::quant_bpp(model_quant);
+        let model_mem = params_b * bpp;
+        let overhead = 0.5_f64; // CUDA/Metal context + compute buffers
+        let usable_vram = vram_gb * 0.90; // 10% safety margin
+
+        let free_for_kv = usable_vram - model_mem - overhead;
+        if free_for_kv <= 0.0 {
+            return 2048;
+        }
+
+        let kv_mult = Self::kv_cache_multiplier(kv_cache_type);
+        let kv_per_token_gb = 0.000008 * params_b * kv_mult;
+        if kv_per_token_gb <= 0.0 {
+            return 2048;
+        }
+
+        let vram_ctx = (free_for_kv / kv_per_token_gb) as u32;
+
+        // Quality ceiling: native training context × YaRN safe extension factor
+        let native_ctx = Self::native_ctx_length(model_name);
+        let quality_cap = (native_ctx as f64 * Self::yarn_extension_factor(params_b)) as u32;
+
+        let effective = vram_ctx.min(quality_cap);
+        // Round down to nearest 1024, clamp to [2048, 131072]
+        let rounded = (effective / 1024) * 1024;
+        rounded.clamp(2048, 131072)
+    }
+
+    pub fn from_hardware(profile: &HardwareProfile, models: &[ModelSelection]) -> Self {
+        use llmfit_core::hardware::GpuBackend;
+
+        let has_gpu = profile.vram_gb >= 1.0;
+        let vram = profile.vram_gb as f64;
+
+        // Extract primary model metadata
+        let model_name = models.first().map(|m| m.name.as_str()).unwrap_or("");
+        let params_b = models
+            .first()
+            .and_then(|m| Self::parse_params_b(&m.name))
+            .unwrap_or(7.0);
+        let model_quant = models
+            .first()
+            .and_then(|m| m.quant.as_deref())
+            .unwrap_or("Q4_K_M");
+        let bpp = llmfit_core::models::quant_bpp(model_quant);
+        let model_mem = params_b * bpp;
+
+        // Calculate VRAM reserved by secondary/autocomplete models (loaded simultaneously).
+        // llama-swap keeps them persistent, so we must subtract their footprint from
+        // the VRAM budget available for the primary model's KV cache / context.
+        let secondary_vram: f64 = models
+            .iter()
+            .skip(1) // skip primary
+            .map(|m| {
+                let p = Self::parse_params_b(&m.name).unwrap_or(1.5);
+                let q = m.quant.as_deref().unwrap_or("Q4_K_M");
+                let b = llmfit_core::models::quant_bpp(q);
+                // Model weights + ~0.3 GB overhead for its KV cache / compute buffers
+                p * b + 0.3
+            })
+            .sum();
+        let effective_vram = vram - secondary_vram;
+
+        // ── KV cache quantization ──────────────────────────────────────────
+        // Match KV cache quant to model weight quant when VRAM is plentiful;
+        // fall back to q4_0 to save memory when VRAM is tight.
+        let kv_quant = if has_gpu {
+            let headroom_after_model = effective_vram - model_mem - 0.5;
+            if let Some(q) = models.first().and_then(|m| m.quant.as_deref()) {
+                let q_lower = q.to_lowercase();
+                if q_lower.contains("8") && headroom_after_model > 4.0 {
+                    "q8_0".to_string() // Plenty of room → high-quality KV
+                } else {
+                    "q4_0".to_string() // Tight → compressed KV
+                }
+            } else {
+                "q4_0".to_string()
+            }
+        } else {
+            "f16".to_string()
+        };
+
+        // ── Context size ───────────────────────────────────────────────────
+        let ctx_size = if has_gpu {
+            Self::calculate_max_ctx(effective_vram, params_b, model_quant, &kv_quant, model_name)
         } else if profile.ram_gb >= 32.0 {
             8192
         } else if profile.ram_gb >= 16.0 {
@@ -69,57 +239,90 @@ impl LlamaServerArgs {
             2048
         };
 
-        // Heuristic mapping for GPU layers based on VRAM
+        // ── GPU layer offload ──────────────────────────────────────────────
         let n_gpu_layers = if has_gpu {
-            if profile.vram_gb >= 12.0 {
-                999 // Offload entirely (fits most 8B)
-            } else if profile.vram_gb >= 8.0 {
-                33 // Typically enough for full 8B, keeps system stable
-            } else if profile.vram_gb >= 6.0 {
-                24
-            } else if profile.vram_gb >= 4.0 {
-                16
-            } else if profile.vram_gb >= 2.0 {
-                8
+            if profile.unified_memory {
+                // Apple Silicon / unified memory: all layers always in shared pool
+                999
+            } else if effective_vram >= model_mem + 1.0 {
+                999 // Full GPU offload — model fits with headroom
             } else {
-                0
+                // Partial offload: estimate layers from available VRAM fraction.
+                // Most transformer models have ~(params_b × 4) layers.
+                let total_layers = (params_b * 4.0).round() as i32;
+                let frac = (effective_vram / model_mem).min(1.0);
+                ((total_layers as f64 * frac) as i32).max(0)
             }
         } else {
             0
         };
 
-        // Heuristic for KV Cache Type based on primary model quant
-        let mut kv_quant = "f16".to_string();
-        if has_gpu {
-            if let Some(m) = models.first() {
-                if let Some(q) = &m.quant {
-                    let q_lower = q.to_lowercase();
-                    if q_lower.contains("8") {
-                        kv_quant = "q8_0".to_string();
-                    } else if q_lower.contains("4") || q_lower.contains("5") {
-                        kv_quant = "q4_0".to_string();
-                    } else {
-                        kv_quant = "q4_0".to_string(); // Safest fallback for VRAM limits
-                    }
-                } else {
-                    kv_quant = "q4_0".to_string();
-                }
+        // ── Flash attention ────────────────────────────────────────────────
+        // Flash-attn is well-supported on CUDA and Metal. Vulkan/ROCm/SYCL
+        // support varies; disable by default for safety.
+        let flash_attn = if has_gpu {
+            match profile.gpu_backend {
+                GpuBackend::Cuda | GpuBackend::Metal => "on".to_string(),
+                _ => "off".to_string(),
+            }
+        } else {
+            "off".to_string()
+        };
+
+        // ── Threads ────────────────────────────────────────────────────────
+        // For GPU inference the CPU is mostly idle (prompt preprocessing).
+        // Use physical cores (assume 2 HW threads per core) minus 2 for OS.
+        // For CPU inference, use most cores.
+        let mut extra_args = HashMap::new();
+        let physical_cores = (profile.cpu_cores / 2).max(1);
+        let threads = if has_gpu {
+            // GPU inference: CPU does tokenization + HTTP; don't starve the OS
+            physical_cores.min(8).max(2)
+        } else {
+            // CPU inference: use most physical cores, leave 2 for OS
+            (physical_cores - 1).max(2)
+        };
+        extra_args.insert("threads".to_string(), serde_json::json!(threads));
+
+        // ── Parallel slots ─────────────────────────────────────────────────
+        // Number of concurrent request slots. Each slot reserves ctx_size
+        // tokens of KV cache. More slots = more VRAM.
+        //   slot_kv_gb = 0.000008 × params_b × kv_mult × ctx_size
+        //   max_slots = min(floor(free_vram / slot_kv_gb), 4)
+        // Default to 1 slot for safety, up to 4 for large VRAM systems.
+        let parallel = if has_gpu && effective_vram >= model_mem + 2.0 {
+            let kv_mult = Self::kv_cache_multiplier(&kv_quant);
+            let slot_kv_gb = 0.000008 * params_b * kv_mult * ctx_size as f64;
+            if slot_kv_gb > 0.0 {
+                let free_for_slots = (effective_vram * 0.85) - model_mem - 0.5;
+                let max_slots = (free_for_slots / slot_kv_gb).floor() as u32;
+                max_slots.clamp(1, 4)
             } else {
-                kv_quant = "q4_0".to_string();
+                1
+            }
+        } else {
+            1
+        };
+        if parallel > 1 {
+            extra_args.insert("parallel".to_string(), serde_json::json!(parallel));
+        }
+
+        // ── Memory lock ────────────────────────────────────────────────────
+        // Prevent OS from swapping the model out of RAM/VRAM. Beneficial on
+        // Linux (mmap); less relevant on macOS (already unified).
+        #[cfg(not(target_os = "macos"))]
+        {
+            if has_gpu && vram >= model_mem + 1.0 {
+                extra_args.insert("mlock".to_string(), serde_json::json!(true));
             }
         }
 
-        let mut extra_args = HashMap::new();
         extra_args.insert("slot-save-path".to_string(), serde_json::json!("/models"));
 
         LlamaServerArgs {
             ctx_size: Some(ctx_size),
             n_gpu_layers: Some(n_gpu_layers),
-            flash_attn: Some(if has_gpu {
-                "on".to_string()
-            } else {
-                "off".to_string()
-            }),
+            flash_attn: Some(flash_attn),
             cache_type_k: Some(kv_quant.clone()),
             cache_type_v: Some(kv_quant),
             extra_args,
@@ -455,6 +658,11 @@ pub fn display_config_instructions(config: &InitConfig) {
         .or_else(|| config.models.first())
         .map(|m| m.name.clone())
         .unwrap_or_else(|| "default".to_string());
+    let autocomplete_model = config
+        .models
+        .iter()
+        .find(|m| crate::runner::is_autocomplete_model(&m.name))
+        .map(|m| m.name.clone());
 
     println!(
         "\n{}",
@@ -475,9 +683,18 @@ pub fn display_config_instructions(config: &InitConfig) {
     println!("    \"localcode\": {{");
     println!("      \"models\": {{");
     println!("        \"{}\": {{", standard_model);
-    println!("          \"name\": \"{}\",", standard_model);
+    println!("          \"name\": \"{}\"", standard_model);
     println!("        }}");
+    if let Some(ref auto_model) = autocomplete_model {
+        println!("        ,\"{}\": {{", auto_model);
+        println!("          \"name\": \"{}\"", auto_model);
+        println!("        }}");
+    }
     println!("      }},");
+    println!("      \"model\": \"{}\",", standard_model);
+    if let Some(ref auto_model) = autocomplete_model {
+        println!("      \"small_model\": \"{}\",", auto_model);
+    }
     println!("      \"name\": \"LocalCode\",");
     println!("      \"npm\": \"@ai-sdk/openai-compatible\",");
     println!("      \"options\": {{");
@@ -500,7 +717,43 @@ pub fn display_config_instructions(config: &InitConfig) {
         shell_cmd, anthropic_base_url
     );
     println!("{} ANTHROPIC_API_KEY=\"sk-localcode\"", shell_cmd);
+
+    // Advise on CLAUDE_CODE_MAX_CONTEXT_TOKENS aligned to the model's ctx_size.
+    // Claude Code must know the local model's context limit so it can size its
+    // system prompt, tool definitions, and conversation history to fit.
+    // Formula: max_context_tokens = ctx_size - response_headroom
+    let ctx_size = config
+        .llama_server_args
+        .as_ref()
+        .and_then(|a| a.ctx_size)
+        .unwrap_or(32768);
+    // Reserve ~15% for the model's response, minimum 4096 tokens.
+    let response_headroom = std::cmp::max(4096, ctx_size / 7);
+    let max_context_tokens = ctx_size.saturating_sub(response_headroom);
+    println!(
+        "{} CLAUDE_CODE_MAX_CONTEXT_TOKENS={}",
+        shell_cmd, max_context_tokens
+    );
+
     println!("claude");
+
+    println!(
+        "\n{}",
+        crate::style("💡 Context Token Alignment").bold().magenta()
+    );
+    println!(
+        "  Your model's context size is {} tokens.",
+        crate::style(ctx_size).yellow()
+    );
+    println!(
+        "  CLAUDE_CODE_MAX_CONTEXT_TOKENS is set to {} (reserves {} tokens for model response).",
+        crate::style(max_context_tokens).green(),
+        response_headroom
+    );
+    println!(
+        "  If you change ctx_size in localcode.json, re-run `{}` to see updated values.",
+        crate::style("localcode info").cyan()
+    );
 }
 
 #[cfg(test)]
@@ -548,23 +801,148 @@ mod tests {
         let profile = HardwareProfile {
             vram_gb: 16.0,
             ram_gb: 32.0,
-            compute_capability: crate::profiling::ComputeCapability::High,
+            cpu_cores: 16,
+            gpu_name: Some("NVIDIA GeForce RTX 5060 Ti".to_string()),
+            gpu_backend: llmfit_core::hardware::GpuBackend::Cuda,
+            gpu_count: 1,
+            unified_memory: false,
             recommended_models: vec![],
             recommended_combos: vec![],
         };
         let models = vec![ModelSelection {
-            name: "test-model".to_string(),
+            name: "Qwen2.5-Coder-7B-Instruct".to_string(),
             quant: Some("Q8_0".to_string()),
         }];
         let args = LlamaServerArgs::from_hardware(&profile, &models);
-        assert_eq!(args.ctx_size, Some(16384));
-        assert_eq!(args.n_gpu_layers, Some(999));
-        assert_eq!(args.flash_attn, Some("on".to_string()));
-        assert_eq!(args.cache_type_k, Some("q8_0".to_string()));
+        // VRAM-based: 7B Q8_0 on 16GB with q8_0 KV → quality-capped at 32768×1.5 = 49152
+        assert_eq!(args.ctx_size, Some(49152));
+        assert_eq!(args.n_gpu_layers, Some(999)); // 7B Q8_0 ≈ 7.35 GB fits in 16 GB
+        assert_eq!(args.flash_attn, Some("on".to_string())); // CUDA → flash on
+        assert_eq!(args.cache_type_k, Some("q8_0".to_string())); // 8.15GB headroom > 4GB → q8_0
         assert_eq!(
             args.extra_args.get("slot-save-path").unwrap(),
             &serde_json::json!("/models")
         );
+        // Threads: 16 logical cores → 8 physical, GPU mode caps at 8
+        assert_eq!(args.extra_args.get("threads").unwrap(), &serde_json::json!(8));
+        // Should have multiple parallel slots with the VRAM headroom
+        assert!(args.extra_args.get("parallel").is_some());
+    }
+
+    #[test]
+    fn test_calculate_max_ctx_known_values() {
+        // Qwen 7B Q8_0 on 16GB with q8_0 KV cache
+        // VRAM would allow ~131k but quality cap is 32768×1.5 = 49152
+        let ctx = LlamaServerArgs::calculate_max_ctx(16.0, 7.0, "Q8_0", "q8_0", "Qwen2.5-Coder-7B-Instruct");
+        assert_eq!(ctx, 49152, "7B on 16GB should hit quality cap at 49152");
+
+        // 14B Q4_K_M on 12GB with q4_0 KV cache (14B → 2.0× factor, native 32768 → quality cap 65536)
+        let ctx = LlamaServerArgs::calculate_max_ctx(12.0, 14.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-14B-Instruct");
+        assert!(ctx >= 8192, "Expected ≥8192, got {ctx}");
+
+        // 7B Q4_K_M on 8GB with q4_0 KV
+        let ctx = LlamaServerArgs::calculate_max_ctx(8.0, 7.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-7B-Instruct");
+        assert!(ctx >= 16384, "Expected ≥16384, got {ctx}");
+
+        // Tiny VRAM — model doesn't fit
+        let ctx = LlamaServerArgs::calculate_max_ctx(2.0, 7.0, "Q8_0", "q8_0", "Qwen2.5-Coder-7B-Instruct");
+        assert_eq!(ctx, 2048);
+
+        // DeepSeek 7B has 131072 native context → high cap even for 7B
+        let ctx = LlamaServerArgs::calculate_max_ctx(16.0, 7.0, "Q8_0", "q8_0", "DeepSeek-Coder-V2-Lite-7B");
+        assert!(ctx >= 49152, "DeepSeek should allow extended context, got {ctx}");
+    }
+
+    #[test]
+    fn test_quality_cap_per_model_family() {
+        // Qwen 7B: native 32768 × 1.5 = 49152
+        assert_eq!(LlamaServerArgs::native_ctx_length("Qwen2.5-Coder-7B-Instruct"), 32768);
+        // Qwen 72B: native 131072
+        assert_eq!(LlamaServerArgs::native_ctx_length("Qwen2.5-Coder-72B-Instruct"), 131072);
+        // Llama 3.1: native 131072
+        assert_eq!(LlamaServerArgs::native_ctx_length("Meta-Llama-3.1-8B-Instruct"), 131072);
+        // Llama 3 (original): native 8192
+        assert_eq!(LlamaServerArgs::native_ctx_length("Meta-Llama-3-8B-Instruct"), 8192);
+        // Gemma 2: native 8192
+        assert_eq!(LlamaServerArgs::native_ctx_length("gemma-2-9b-it"), 8192);
+        // Unknown model → fallback 32768
+        assert_eq!(LlamaServerArgs::native_ctx_length("some-random-model"), 32768);
+    }
+
+    #[test]
+    fn test_parse_params_b() {
+        assert_eq!(LlamaServerArgs::parse_params_b("Qwen2.5-Coder-7B-Instruct"), Some(7.0));
+        assert_eq!(LlamaServerArgs::parse_params_b("Qwen2.5-Coder-14B-Instruct"), Some(14.0));
+        assert_eq!(LlamaServerArgs::parse_params_b("DeepSeek-Coder-V2-Lite-Instruct-1.5B-GGUF"), Some(1.5));
+        assert_eq!(LlamaServerArgs::parse_params_b("some-model-no-size"), None);
+    }
+
+    #[test]
+    fn test_from_hardware_vulkan_no_flash_attn() {
+        let profile = HardwareProfile {
+            vram_gb: 8.0,
+            ram_gb: 16.0,
+            cpu_cores: 8,
+            gpu_name: Some("AMD Radeon RX 7600".to_string()),
+            gpu_backend: llmfit_core::hardware::GpuBackend::Vulkan,
+            gpu_count: 1,
+            unified_memory: false,
+            recommended_models: vec![],
+            recommended_combos: vec![],
+        };
+        let models = vec![ModelSelection {
+            name: "Qwen2.5-Coder-7B-Instruct".to_string(),
+            quant: Some("Q4_K_M".to_string()),
+        }];
+        let args = LlamaServerArgs::from_hardware(&profile, &models);
+        assert_eq!(args.flash_attn, Some("off".to_string())); // Vulkan → no flash
+        assert_eq!(args.n_gpu_layers, Some(999)); // 7B Q4_K_M ≈ 4.06 GB fits in 8 GB
+    }
+
+    #[test]
+    fn test_from_hardware_apple_silicon() {
+        let profile = HardwareProfile {
+            vram_gb: 16.0, // unified memory reported as GPU
+            ram_gb: 16.0,
+            cpu_cores: 10,
+            gpu_name: Some("Apple M2 Pro".to_string()),
+            gpu_backend: llmfit_core::hardware::GpuBackend::Metal,
+            gpu_count: 1,
+            unified_memory: true,
+            recommended_models: vec![],
+            recommended_combos: vec![],
+        };
+        let models = vec![ModelSelection {
+            name: "Qwen2.5-Coder-7B-Instruct".to_string(),
+            quant: Some("Q4_K_M".to_string()),
+        }];
+        let args = LlamaServerArgs::from_hardware(&profile, &models);
+        assert_eq!(args.n_gpu_layers, Some(999)); // Unified memory → always full offload
+        assert_eq!(args.flash_attn, Some("on".to_string())); // Metal → flash on
+    }
+
+    #[test]
+    fn test_from_hardware_partial_offload() {
+        // 4GB VRAM with a 7B Q8_0 model (~7.35 GB) → can't fit all layers
+        let profile = HardwareProfile {
+            vram_gb: 4.0,
+            ram_gb: 32.0,
+            cpu_cores: 16,
+            gpu_name: Some("NVIDIA GeForce GTX 1650".to_string()),
+            gpu_backend: llmfit_core::hardware::GpuBackend::Cuda,
+            gpu_count: 1,
+            unified_memory: false,
+            recommended_models: vec![],
+            recommended_combos: vec![],
+        };
+        let models = vec![ModelSelection {
+            name: "Qwen2.5-Coder-7B-Instruct".to_string(),
+            quant: Some("Q8_0".to_string()),
+        }];
+        let args = LlamaServerArgs::from_hardware(&profile, &models);
+        // 4.0 / 7.35 ≈ 54% → 28 layers × 0.54 ≈ 15
+        assert!(args.n_gpu_layers.unwrap() > 0);
+        assert!(args.n_gpu_layers.unwrap() < 999);
     }
 
     #[test]

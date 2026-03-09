@@ -3,8 +3,10 @@ use anyhow::{Context, Result};
 use hf_hub::api::sync::ApiBuilder;
 use tokio::process::Command;
 
-/// Claude Code Jinja chat template embedded at compile time.
-/// Handles the XML/JSON tool-call format Claude Code expects.
+/// Qwen-style Jinja chat template embedded at compile time.
+/// Kept for backwards compatibility. By default the model's built-in template is used
+/// for better tool-call detection across all model families.
+#[allow(dead_code)]
 const CLAUDE_CODE_JINJA: &str = include_str!("claude_code.jinja");
 
 pub async fn extract_hf_repo_and_file(
@@ -138,6 +140,49 @@ fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<Strin
     None
 }
 
+/// Infer the GGUF architecture key from a HuggingFace model name.
+///
+/// llama-server caps per-slot context to `n_ctx_train` (from GGUF metadata).
+/// To extend beyond the native context window we need:
+///   `--override-kv {arch}.context_length=int:{ctx_size}`
+/// The `{arch}` prefix is model-family-specific and stored in the GGUF under
+/// `general.architecture`. We infer it from the model name.
+fn gguf_arch_key(model_name: &str) -> Option<&'static str> {
+    let lower = model_name.to_lowercase();
+    if lower.contains("qwen") {
+        Some("qwen2")
+    } else if lower.contains("llama") || lower.contains("codellama") {
+        Some("llama")
+    } else if lower.contains("mistral") || lower.contains("codestral") {
+        Some("mistral")
+    } else if lower.contains("gemma") || lower.contains("codegemma") {
+        Some("gemma2")
+    } else if lower.contains("phi") {
+        Some("phi3")
+    } else if lower.contains("starcoder") || lower.contains("starcode") {
+        Some("starcoder2")
+    } else if lower.contains("deepseek") {
+        Some("deepseek2")
+    } else if lower.contains("command-r") || lower.contains("command_r") {
+        Some("command-r")
+    } else {
+        None
+    }
+}
+
+/// Extract the --ctx-size value from a CLI args string, if present.
+fn extract_ctx_size(args: &str) -> Option<u64> {
+    let mut parts = args.split_whitespace();
+    while let Some(part) = parts.next() {
+        if part == "--ctx-size" {
+            if let Some(val) = parts.next() {
+                return val.parse().ok();
+            }
+        }
+    }
+    None
+}
+
 pub async fn start_llama_swap_docker(
     models: &[ModelSelection],
     models_dir: &std::path::Path,
@@ -166,14 +211,11 @@ pub async fn start_llama_swap_docker(
         .output()
         .await;
 
-    // Write the embedded Jinja template to disk next to the YAML so llama-server can use it.
-    let jinja_path = models_dir.join("claude-code.jinja");
-    tokio::fs::write(&jinja_path, CLAUDE_CODE_JINJA).await?;
-
     // Generate config.yaml for llama-swap
     let mut yaml_content =
         String::from("includeAliasesInList: true\nsendLoadingState: true\n\nmodels:\n");
     let mut autocomplete_models = Vec::new();
+    let mut autocomplete_model_name: Option<String> = None;
 
     let mut assigned_aliases = false;
     for m in models {
@@ -187,6 +229,9 @@ pub async fn start_llama_swap_docker(
         // Only add to autocomplete group if it's NOT the primary model (assigned_aliases is true after the first)
         if assigned_aliases && is_autocomplete {
             autocomplete_models.push(m.name.clone());
+            if autocomplete_model_name.is_none() {
+                autocomplete_model_name = Some(m.name.clone());
+            }
         }
 
         // Prefer local file path if the model is already downloaded
@@ -210,9 +255,9 @@ pub async fn start_llama_swap_docker(
 
         let mut custom_args = llama_server_args
             .map(|a| a.to_cli_args())
-            // Claude Code's system prompt + tool defs consume ~15k tokens before any
-            // conversation, so 8192 is far too small. Use 32768 as the safe default.
-            .unwrap_or_else(|| "--ctx-size 32768".to_string());
+            // Claude Code's system prompt + tool defs + conversation easily reach
+            // 30-40k tokens. 32768 is too tight; use 65536 as the safe default.
+            .unwrap_or_else(|| "--ctx-size 65536".to_string());
 
         // Sanitize Windows absolute paths for Docker.
         // If an arg contains a path like C:\Users\..., rewrite it to use /models/ relative to the container.
@@ -228,40 +273,105 @@ pub async fn start_llama_swap_docker(
         if !assigned_aliases {
             assigned_aliases = true;
             yaml_content.push_str(&format!(
-                // Main models use the embedded Claude Code Jinja template.
-                // --chat-template-file is mounted at /models/claude-code.jinja inside the container.
-                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --chat-template-file /models/claude-code.jinja {}\n",
-                source_args, custom_args
+                // Let each model use its OWN built-in chat template for tool calling.
+                // The native template is stored inside the GGUF and llama.cpp knows how
+                // to parse its tool-call format (Qwen <tool_call>, Llama <|python_tag|>, etc.).
+                // Overriding with a custom template breaks non-Qwen models because they
+                // don't generate the Qwen-specific <tool_call> XML tags.
+                //
+                // --reasoning-format none: prevents llama-server from incorrectly
+                // auto-detecting a reasoning format (e.g. "deepseek" for Qwen) which
+                // disrupts grammar-constrained tool-call generation.
+                //
+                // --rope-scaling yarn + --override-kv: enables YaRN rope scaling
+                // so --ctx-size can exceed the model's native context length.
+                // llama-server caps per-slot context to GGUF's n_ctx_train;
+                // --override-kv raises that metadata value so the slot isn't capped.
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --reasoning-format none --rope-scaling yarn{}{}\n",
+                source_args,
+                // Inject --override-kv {arch}.context_length=int:{ctx_size} when we
+                // can infer the architecture and ctx_size exceeds typical defaults.
+                if let (Some(arch), Some(ctx)) = (gguf_arch_key(&m.name), extract_ctx_size(&custom_args)) {
+                    if ctx > 32768 {
+                        format!(" --override-kv {}.context_length=int:{}", arch, ctx)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                },
+                format!(" {}", custom_args)
             ));
             // strip_params: prevent Claude Code from overriding local model's
             // sampling settings (temperature, top_k, etc.) which degrades quality.
+            //
+            // setParams tool_choice: force llama-server's grammar-constrained
+            // tool-call generation to be active from the first token. Without this,
+            // the grammar is "lazy" — it only triggers when the model starts with
+            // `<tool_call>\n`. Small models often start with markdown/XML instead,
+            // bypassing the grammar entirely and producing raw text instead of
+            // structured tool_use blocks. The Anthropic-format object
+            // `{"type":"any"}` is converted to OpenAI `"required"` internally.
             yaml_content.push_str("    filters:\n");
             yaml_content
                 .push_str("      strip_params: \"temperature, top_k, top_p, repeat_penalty\"\n");
+            yaml_content.push_str("      setParams:\n");
+            yaml_content.push_str("        tool_choice:\n");
+            yaml_content.push_str("          type: \"any\"\n");
             yaml_content.push_str("    aliases:\n");
-            // Claude 3.5 series
+            // Claude 3.5 series — sonnet/opus → primary model
             yaml_content.push_str("      - \"claude-3-5-sonnet-20241022\"\n");
             yaml_content.push_str("      - \"claude-3-5-sonnet-latest\"\n");
-            yaml_content.push_str("      - \"claude-3-5-haiku-20241022\"\n");
-            yaml_content.push_str("      - \"claude-3-5-haiku-latest\"\n");
             yaml_content.push_str("      - \"claude-3-opus-20240229\"\n");
             yaml_content.push_str("      - \"claude-3-sonnet-20240229\"\n");
-            yaml_content.push_str("      - \"claude-3-haiku-20240307\"\n");
-            // Claude 4 series — Claude Code 2.x sends these model IDs
+            // Claude 4 series — sonnet/opus → primary model
             yaml_content.push_str("      - \"claude-sonnet-4-5\"\n");
             yaml_content.push_str("      - \"claude-sonnet-4-5-20250929\"\n");
             yaml_content.push_str("      - \"claude-sonnet-4-6\"\n");
             yaml_content.push_str("      - \"claude-sonnet-4-latest\"\n");
             yaml_content.push_str("      - \"claude-opus-4-5\"\n");
             yaml_content.push_str("      - \"claude-opus-4-5-20251101\"\n");
-            yaml_content.push_str("      - \"claude-haiku-4-5\"\n");
-            yaml_content.push_str("      - \"claude-haiku-4-5-20251001\"\n");
+            // If there's NO small model, haiku aliases also go to primary
+            if autocomplete_model_name.is_none() {
+                yaml_content.push_str("      - \"claude-3-5-haiku-20241022\"\n");
+                yaml_content.push_str("      - \"claude-3-5-haiku-latest\"\n");
+                yaml_content.push_str("      - \"claude-3-haiku-20240307\"\n");
+                yaml_content.push_str("      - \"claude-haiku-4-5\"\n");
+                yaml_content.push_str("      - \"claude-haiku-4-5-20251001\"\n");
+            }
         } else {
             yaml_content.push_str(&format!(
                 // Secondary/autocomplete models use standard llama-server settings.
-                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja {}\n",
-                source_args, custom_args
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --reasoning-format none --rope-scaling yarn{}{}\n",
+                source_args,
+                if let (Some(arch), Some(ctx)) = (gguf_arch_key(&m.name), extract_ctx_size(&custom_args)) {
+                    if ctx > 32768 {
+                        format!(" --override-kv {}.context_length=int:{}", arch, ctx)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                },
+                format!(" {}", custom_args)
             ));
+            // Apply the same filters to the small model for consistent tool-call
+            // generation when Claude Code routes subagent requests via haiku aliases.
+            yaml_content.push_str("    filters:\n");
+            yaml_content
+                .push_str("      strip_params: \"temperature, top_k, top_p, repeat_penalty\"\n");
+            yaml_content.push_str("      setParams:\n");
+            yaml_content.push_str("        tool_choice:\n");
+            yaml_content.push_str("          type: \"any\"\n");
+            // Haiku aliases → small model for subagent routing
+            if is_autocomplete {
+                yaml_content.push_str("    aliases:\n");
+                yaml_content.push_str("      - \"claude-3-5-haiku-20241022\"\n");
+                yaml_content.push_str("      - \"claude-3-5-haiku-latest\"\n");
+                yaml_content.push_str("      - \"claude-3-haiku-20240307\"\n");
+                yaml_content.push_str("      - \"claude-haiku-4-5\"\n");
+                yaml_content.push_str("      - \"claude-haiku-4-5-20251001\"\n");
+            }
         }
     }
 

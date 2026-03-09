@@ -16,13 +16,15 @@
 
 ## 🚀 Key Features
 
-*   **Intelligent Hardware Profiling:** Uses `llmfit-core` to auto-detect system RAM and VRAM capability, recommending the maximum context lengths and quantizations native to your machine. No more out-of-memory errors!
-*   **Dual Model Combos:** Automatically suggests ideal combinations of large reasoning models alongside lightning-fast **autocomplete models** based strictly on your available VRAM footprint.
-*   **Dynamic Swapping:** Seamlessly switches models in and out of memory at the proxy layer using `ghcr.io/mostlygeek/llama-swap`. Request a different `.gguf` and watch it instantly swap.
+*   **Intelligent Hardware Profiling:** Uses `llmfit-core` to auto-detect VRAM, RAM, GPU backend (CUDA/Metal/Vulkan/ROCm), CPU cores, and unified memory. Every llama.cpp parameter — context size, GPU layers, threads, KV cache quantization, flash attention, parallel slots — is calculated automatically. No manual tuning needed.
+*   **VRAM-Aware Context Sizing:** Context size is computed from a dual-constraint formula: VRAM budget (what physically fits) capped by quality ceiling (native context × YaRN extension factor). See GUIDE.md for the math.
+*   **Dual Model Combos:** Automatically suggests ideal combinations of large reasoning models alongside lightning-fast **autocomplete models** based on your available VRAM footprint.
+*   **Claude Code + OpenCode Support:** Works with both OpenCode (OpenAI-compatible API) and Claude Code (Anthropic Messages API) on the same port. Model aliases for all Claude 3.5/4.x IDs are configured automatically.
+*   **Dynamic Swapping:** Seamlessly switches models in and out of memory at the proxy layer using `llama-swap`. Request a different model and watch it swap instantly.
 *   **Zero Port Conflicts:** Both your heavy chat model and your instantaneous autocomplete model run on the *exact same port* (`8080`). The proxy handles the routing natively.
 *   **Model Discovery:** Automatically scans known cache locations — **Ollama**, **LM Studio**, and any custom directory — so you can reuse weights you already have on disk (`localcode ls`).
-*   **Configurable llama.cpp Args:** Fine-tune GPU layers, context size, KV cache quantization, flash attention, and any other `llama.cpp` parameter directly in `localcode.json`.
-*   **Global & Project Contexts:** Store state globally or override properties explicitly across projects (`localcode init`).
+*   **Configurable llama.cpp Args:** Fine-tune all parameters in `localcode.json` or let `init` auto-configure everything from hardware profiling.
+*   **Global & Project Contexts:** Store state globally or override per-project (`localcode init`).
 *   **One-Line Installation:** Install immediately with secure OS-specific scripts without requiring a Rust toolchain.
 *   **Self-Upgrade:** Update the binary in-place from GitHub releases (`localcode upgrade`).
 
@@ -128,21 +130,25 @@ The system uses `~/.config/localcode/` (or OS equivalent) to maintain its global
 
 ### Request Lifecycle Flow
 
-When an inference call is made from OpenCode (or any frontend), LocalCode abstracts the execution:
+When an inference call is made from OpenCode, Claude Code, or any other frontend, LocalCode abstracts the execution:
 
 ```mermaid
 graph LR
-    A[Client / IDE Plugin] -->|OpenAI API Request /v1/chat/completions| B(Llama-Swap Proxy :8080)
-    B -->|Check Memory & Load Request| C[Llama.cpp Backend]
+    A[OpenCode / IDE Plugin] -->|OpenAI API /v1/chat/completions| B(llama-swap Proxy :8080)
+    A2[Claude Code] -->|Anthropic API /v1/messages| B
+    B -->|Route by model alias & load GGUF| C[llama.cpp Backend]
     C -->|GGUF Binary Mapping| D[(Model Disk / ~/.config/localcode/models/)]
-    C -->|Execute Inference Task| B
+    C -->|Execute Inference| B
     B -->|Return JSON| A
+    B -->|Return JSON| A2
 ```
 
-1. **Proxy Intercept:** The reverse proxy `llama-swap` listens continuously.
-2. **Context Resolution:** The proxy observes the requested model string in the payload.
-3. **Weight Loading:** If the specific `.gguf` is not in RAM/VRAM, the backend immediately purges the oldest inactive model and cycles the requested parameters into active memory.
-4. **Execution:** The inference runs cleanly across `llama.cpp`.
+1. **Proxy Intercept:** The llama-swap reverse proxy listens on the configured port (default `8080`).
+2. **Context Resolution:** The proxy inspects the model ID in the request. Claude Code sends `claude-sonnet-4-6` etc. — these are aliased to your local model.
+3. **Weight Loading:** If the requested model is not active, the proxy unloads the current model and loads the new one from disk.
+4. **Inference:** The request is forwarded to llama.cpp with grammar-constrained tool-call generation (`tool_choice: any`), YaRN rope scaling, and the model's native Jinja chat template.
+
+> The Docker image `ghcr.io/thewulf7/localcode:cuda-latest` bundles llama-swap + llama-server with CUDA 12.8 support.
 
 ### Model Discovery
 
@@ -175,17 +181,20 @@ The `llama_server_args` key in `localcode.json` controls how the llama.cpp backe
 ```json
 {
   "llama_server_args": {
-    "ctx_size": 8192,
+    "ctx_size": 49152,
     "n_gpu_layers": 999,
-    "flash_attn": true,
+    "flash_attn": "on",
     "cache_type_k": "q8_0",
     "cache_type_v": "q8_0",
-    "slot-save-path": "/models/slots"
+    "threads": 8,
+    "parallel": 2,
+    "mlock": true,
+    "slot-save-path": "/models"
   }
 }
 ```
 
-Any additional key-value pairs are passed through directly as `--key value` flags to the llama.cpp server.
+All parameters are calculated automatically during `init` based on your VRAM, GPU backend, CPU cores, and model size. Any additional key-value pairs are passed through directly as `--key value` flags to llama.cpp.
 
 ---
 
@@ -209,13 +218,14 @@ To use your local server in OpenCode, update your `opencode.json` (found in `~/.
     "localcode": {
       "models": {
         "your-model-name": {
-          "name": "your-model-name",
-          "limit": {
-            "context": 32768,
-            "output": 4096
-          }
+          "name": "your-model-name"
+        },
+        "your-small-model-name": {
+          "name": "your-small-model-name"
         }
       },
+      "model": "your-model-name",
+      "small_model": "your-small-model-name",
       "name": "LocalCode",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
@@ -227,26 +237,50 @@ To use your local server in OpenCode, update your `opencode.json` (found in `~/.
 }
 ```
 
+The `model` key sets the primary reasoning model and `small_model` sets the fast autocomplete model. Both run on the same port — the llama-swap proxy routes requests based on the model name.
+
 ### 2. Claude Code
 
-LocalCode natively supports the Anthropic Messages API. To use it with Claude Code, set the following environment variables in your terminal:
+LocalCode natively supports the Anthropic Messages API (`/v1/messages`). Claude Code connects to the same port as OpenCode — all Claude model IDs (3.5, 4.x series) are aliased to your local model automatically.
+
+Set the following environment variables in your terminal:
 
 **macOS / Linux:**
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:8080/v1"
+export ANTHROPIC_BASE_URL="http://localhost:8080"
 export ANTHROPIC_API_KEY="sk-localcode"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=42132
 claude
 ```
 
 **Windows (PowerShell):**
 ```powershell
-$env:ANTHROPIC_BASE_URL="http://localhost:8080/v1"
+$env:ANTHROPIC_BASE_URL="http://localhost:8080"
 $env:ANTHROPIC_API_KEY="sk-localcode"
+$env:CLAUDE_CODE_MAX_CONTEXT_TOKENS=42132
 claude
 ```
 
+> [!IMPORTANT]
+> **`CLAUDE_CODE_MAX_CONTEXT_TOKENS` must be aligned with your model's `ctx_size`.** Claude Code uses this value to decide how much conversation history, system prompt, and tool definitions to pack into each request. If it exceeds the model's actual context window, you'll get a `400 exceed_context_size` error.
+>
+> **Formula:** `CLAUDE_CODE_MAX_CONTEXT_TOKENS = ctx_size - response_headroom`
+>
+> Reserve ~15% of ctx_size (minimum 4096 tokens) for the model's response. For example:
+> | `ctx_size` | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Response headroom |
+> |------------|--------------------------------|-------------------|
+> | 16384      | 12288                          | 4096              |
+> | 32768      | 28672                          | 4096              |
+> | 49152      | 42132                          | 7020              |
+> | 65536      | 56196                          | 9340              |
+>
+> Run `localcode info` to see the exact values calculated for your configuration.
+
 > [!TIP]
-> Run `localcode info` anytime to see your current configuration and copy-paste these commands!
+> Run `localcode info` anytime to see your current configuration and copy-paste these commands! The proxy also handles:
+> - **Tool call generation** — grammar-constrained via `tool_choice: { type: "any" }`
+> - **Sampling parameter isolation** — strips Claude Code's cloud-tuned `temperature`/`top_k`/`top_p` to preserve local model quality
+> - **YaRN context extension** — extends context beyond the model's native training length via `--rope-scaling yarn`
 
 
 ---
