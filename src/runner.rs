@@ -409,7 +409,10 @@ pub async fn stop_server() -> Result<()> {
 // Ensure the helper grouping heuristic is standalone so we can cleanly test it
 pub fn is_autocomplete_model(model_name: &str) -> bool {
     let lower = model_name.to_lowercase();
-    lower.contains("mini") || lower.contains("1.5b") || lower.contains("0.5b")
+    lower.contains("mini")
+        || lower.contains("1.5b")
+        || lower.contains("2b")
+        || lower.contains("0.5b")
 }
 
 #[cfg(test)]
