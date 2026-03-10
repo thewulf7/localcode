@@ -165,12 +165,18 @@ async fn main() -> Result<()> {
                     }
                 };
 
+                // Quick hardware profile for per-model arg generation.
+                // This is lightweight (no model DB scan) and only used to
+                // determine VRAM / backend so secondary models get correct settings.
+                let hw_profile = profiling::profile_hardware().await.ok();
+
                 if let Err(e) = runner::start_llama_swap_docker(
                     &config.models,
                     &models_dir,
                     config.port,
                     config.llama_server_args.as_ref(),
                     &downloaded_files,
+                    hw_profile.as_ref(),
                 )
                 .await
                 {

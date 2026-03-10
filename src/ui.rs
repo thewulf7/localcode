@@ -52,6 +52,35 @@ impl LlamaServerArgs {
         re.captures(name)?.get(1)?.as_str().parse().ok()
     }
 
+    /// Bytes-per-parameter for a quantization string, handling Unsloth Dynamic
+    /// (UD-) and extended _XL / _XS variants that llmfit-core doesn't have.
+    ///
+    /// UD (Unsloth Dynamic) quants assign different precision per-layer based
+    /// on sensitivity analysis, giving better quality at the same average bpp.
+    /// The _XL suffix means more layers promoted to higher precision (~12% bigger).
+    /// The _XS suffix trades precision for size (~10% smaller).
+    fn normalize_quant_bpp(quant: &str) -> f64 {
+        // Strip "UD-" prefix — the dynamic per-layer strategy doesn't change
+        // the *average* bpp significantly vs. the same base quant.
+        let stripped = quant.strip_prefix("UD-").unwrap_or(quant);
+
+        if stripped.ends_with("_XL") {
+            // _XL: more important layers quantized at higher precision.
+            // Map Q4_K_XL → Q4_K_M's bpp × 1.12  (≈ 5.25 bpw for Q4 tier)
+            let base = &stripped[..stripped.len() - 3]; // "Q4_K"
+            let base_quant = format!("{}_M", base);
+            llmfit_core::models::quant_bpp(&base_quant) * 1.12
+        } else if stripped.ends_with("_XS") {
+            // _XS: more aggressive quantization for smaller files.
+            let base = &stripped[..stripped.len() - 3];
+            let base_quant = format!("{}_M", base);
+            llmfit_core::models::quant_bpp(&base_quant) * 0.90
+        } else {
+            // Standard quant or UD- with standard suffix (e.g. UD-Q8_0)
+            llmfit_core::models::quant_bpp(stripped)
+        }
+    }
+
     /// KV cache memory multiplier relative to the f16 baseline used by llmfit.
     fn kv_cache_multiplier(cache_type: &str) -> f64 {
         match cache_type {
@@ -111,25 +140,8 @@ impl LlamaServerArgs {
         }
     }
 
-    /// Maximum safe context extension factor via YaRN rope scaling.
-    ///
-    /// YaRN allows extending context beyond training length, but attention
-    /// quality degrades. The safe multiplier depends on model size:
-    /// - Smaller models (≤7B) have less headroom → 1.5×
-    /// - Medium models (8B–20B) → 2.0×
-    /// - Larger models (>20B) extrapolate better → 2.5×
-    fn yarn_extension_factor(params_b: f64) -> f64 {
-        if params_b <= 7.0 {
-            1.5
-        } else if params_b <= 20.0 {
-            2.0
-        } else {
-            2.5
-        }
-    }
-
     /// Calculate the maximum context size that fits in the given VRAM budget,
-    /// capped by what the model can actually handle with acceptable quality.
+    /// capped by the model's native training context length.
     ///
     /// Uses the llmfit-core memory model:
     ///   `total = params_b × bpp + 0.000008 × params_b × ctx + 0.5`
@@ -137,8 +149,9 @@ impl LlamaServerArgs {
     /// Rearranged for VRAM-limited max_ctx:
     ///   `max_ctx = (vram × 0.90 - params_b × bpp - 0.5) / (0.000008 × params_b × kv_mult)`
     ///
-    /// Then capped by the quality ceiling:
-    ///   `quality_cap = native_ctx × yarn_extension_factor(params_b)`
+    /// Context is NEVER extended beyond native training length. YaRN rope
+    /// scaling is disabled because it causes gibberish on small models
+    /// during structured tool-call generation.
     pub fn calculate_max_ctx(
         vram_gb: f64,
         params_b: f64,
@@ -146,36 +159,36 @@ impl LlamaServerArgs {
         kv_cache_type: &str,
         model_name: &str,
     ) -> u32 {
-        let bpp = llmfit_core::models::quant_bpp(model_quant);
+        let bpp = Self::normalize_quant_bpp(model_quant);
         let model_mem = params_b * bpp;
         let overhead = 0.5_f64; // CUDA/Metal context + compute buffers
         let usable_vram = vram_gb * 0.90; // 10% safety margin
 
-        // Claude Code's system prompt + tool definitions consume ~20-30k
-        // tokens, so anything below 64k is unusable. Use 65536 as the floor.
-        const MIN_CTX: u32 = 65536;
+        // Hard ceiling: never exceed the model's native training context.
+        // Extending beyond this requires YaRN which causes gibberish on
+        // small models during structured tool-call generation.
+        let native_ctx = Self::native_ctx_length(model_name);
 
         let free_for_kv = usable_vram - model_mem - overhead;
         if free_for_kv <= 0.0 {
-            return MIN_CTX;
+            // Not enough VRAM for KV cache — use minimum workable context.
+            return native_ctx.min(8192);
         }
 
         let kv_mult = Self::kv_cache_multiplier(kv_cache_type);
         let kv_per_token_gb = 0.000008 * params_b * kv_mult;
         if kv_per_token_gb <= 0.0 {
-            return MIN_CTX;
+            return native_ctx;
         }
 
         let vram_ctx = (free_for_kv / kv_per_token_gb) as u32;
 
-        // Quality ceiling: native training context × YaRN safe extension factor
-        let native_ctx = Self::native_ctx_length(model_name);
-        let quality_cap = (native_ctx as f64 * Self::yarn_extension_factor(params_b)) as u32;
-
-        let effective = vram_ctx.min(quality_cap);
-        // Round down to nearest 1024, clamp to [MIN_CTX, 131072]
+        // Cap at native training context — no YaRN extension.
+        let effective = vram_ctx.min(native_ctx);
         let rounded = (effective / 1024) * 1024;
-        rounded.clamp(MIN_CTX, 131072)
+
+        // Floor at 8192 to be minimally functional.
+        rounded.max(8192)
     }
 
     pub fn from_hardware(profile: &HardwareProfile, models: &[ModelSelection]) -> Self {
@@ -194,7 +207,7 @@ impl LlamaServerArgs {
             .first()
             .and_then(|m| m.quant.as_deref())
             .unwrap_or("Q4_K_M");
-        let bpp = llmfit_core::models::quant_bpp(model_quant);
+        let bpp = Self::normalize_quant_bpp(model_quant);
         let model_mem = params_b * bpp;
 
         // Calculate VRAM reserved by secondary/autocomplete models (loaded simultaneously).
@@ -206,7 +219,7 @@ impl LlamaServerArgs {
             .map(|m| {
                 let p = Self::parse_params_b(&m.name).unwrap_or(1.5);
                 let q = m.quant.as_deref().unwrap_or("Q4_K_M");
-                let b = llmfit_core::models::quant_bpp(q);
+                let b = Self::normalize_quant_bpp(q);
                 // Model weights + ~0.3 GB overhead for its KV cache / compute buffers
                 p * b + 0.3
             })
@@ -214,17 +227,12 @@ impl LlamaServerArgs {
         let effective_vram = vram - secondary_vram;
 
         // ── KV cache quantization ──────────────────────────────────────────
-        // Match KV cache quant to model weight quant when VRAM is plentiful;
-        // fall back to q4_0 to save memory when VRAM is tight.
+        // Context stays within native training length (no YaRN), so q4_0
+        // is safe. Prefer q8_0 when VRAM headroom allows for best quality.
         let kv_quant = if has_gpu {
             let headroom_after_model = effective_vram - model_mem - 0.5;
-            if let Some(q) = models.first().and_then(|m| m.quant.as_deref()) {
-                let q_lower = q.to_lowercase();
-                if q_lower.contains("8") && headroom_after_model > 4.0 {
-                    "q8_0".to_string() // Plenty of room → high-quality KV
-                } else {
-                    "q4_0".to_string() // Tight → compressed KV
-                }
+            if headroom_after_model > 2.0 {
+                "q8_0".to_string()
             } else {
                 "q4_0".to_string()
             }
@@ -233,12 +241,14 @@ impl LlamaServerArgs {
         };
 
         // ── Context size ───────────────────────────────────────────────────
-        // Claude Code needs at least ~64k context (system prompt + tools alone
-        // consume 20-30k tokens). Even on CPU we set 65536 as the floor.
+        // Cap at native training context regardless of GPU/CPU.
+        let native_ctx = Self::native_ctx_length(model_name);
         let ctx_size = if has_gpu {
             Self::calculate_max_ctx(effective_vram, params_b, model_quant, &kv_quant, model_name)
         } else {
-            65536
+            // CPU-only: use native context (RAM is plentiful but extending
+            // beyond training length still causes gibberish).
+            native_ctx
         };
 
         // ── GPU layer offload ──────────────────────────────────────────────
@@ -327,6 +337,65 @@ impl LlamaServerArgs {
             flash_attn: Some(flash_attn),
             cache_type_k: Some(kv_quant.clone()),
             cache_type_v: Some(kv_quant),
+            extra_args,
+        }
+    }
+
+    /// Build lighter CLI args for a secondary/autocomplete model.
+    ///
+    /// The secondary model serves subagent requests (haiku aliases) which carry
+    /// much smaller contexts than the primary conversation.  Its `--ctx-size`
+    /// is capped to the model's native training context, and only 1 parallel
+    /// slot is used to conserve VRAM.
+    pub fn for_secondary_model(
+        primary_args: &LlamaServerArgs,
+        model: &ModelSelection,
+        profile: &HardwareProfile,
+    ) -> LlamaServerArgs {
+        let model_name = &model.name;
+        let params_b = Self::parse_params_b(model_name).unwrap_or(1.5);
+        let native_ctx = Self::native_ctx_length(model_name);
+
+        // Cap context to native training length, but at least 8192
+        // for the subagent system prompt + tool defs.
+        let ctx_size = native_ctx.max(8192);
+
+        let has_gpu = profile.vram_gb >= 1.0;
+        let model_quant = model.quant.as_deref().unwrap_or("Q4_K_M");
+
+        // n_gpu_layers: same strategy as primary — if it fits, go full offload
+        let bpp = Self::normalize_quant_bpp(model_quant);
+        let model_mem = params_b * bpp;
+        let n_gpu_layers = if has_gpu && (model_mem + 0.5) <= profile.vram_gb as f64 {
+            999
+        } else {
+            0
+        };
+
+        // KV cache: q4_0 for secondary (conserve VRAM, no YaRN needed)
+        let kv_quant = if has_gpu { "q4_0" } else { "f16" };
+
+        let mut extra_args = std::collections::HashMap::new();
+
+        // Inherit thread count from primary
+        if let Some(threads) = primary_args.extra_args.get("threads") {
+            extra_args.insert("threads".to_string(), threads.clone());
+        }
+        // Smaller batch sizes for the lighter model
+        extra_args.insert("batch-size".to_string(), serde_json::json!(2048));
+        extra_args.insert("ubatch-size".to_string(), serde_json::json!(512));
+        // Greedy decoding for tool calls with strong anti-repetition
+        extra_args.insert("temp".to_string(), serde_json::json!(0.0));
+        extra_args.insert("top-k".to_string(), serde_json::json!(0));
+        extra_args.insert("top-p".to_string(), serde_json::json!(1.0));
+        extra_args.insert("repeat_penalty".to_string(), serde_json::json!(1.3));
+
+        LlamaServerArgs {
+            ctx_size: Some(ctx_size),
+            n_gpu_layers: Some(n_gpu_layers),
+            flash_attn: primary_args.flash_attn.clone(),
+            cache_type_k: Some(kv_quant.to_string()),
+            cache_type_v: Some(kv_quant.to_string()),
             extra_args,
         }
     }
@@ -432,44 +501,36 @@ pub fn prompt_user(
                 })
                 .collect()
         } else {
-            // Prefer Coding models in auto-mode
-            let coding_combo = profile.recommended_combos.iter().find(|c| {
-                c.standard_model.category.contains("Code")
-                    || c.autocomplete_model.category.contains("Code")
-            });
-
-            if let Some(combo) = coding_combo {
-                vec![
-                    ModelSelection {
-                        name: combo.standard_model.name.clone(),
-                        quant: Some(combo.standard_model.best_quant.clone()),
-                    },
-                    ModelSelection {
-                        name: combo.autocomplete_model.name.clone(),
-                        quant: Some(combo.autocomplete_model.best_quant.clone()),
-                    },
-                ]
-            } else if let Some(model) = profile
+            // Auto-mode: pick best coding primary, then best autocomplete that fits
+            let primary = profile
                 .recommended_models
                 .iter()
-                .find(|m| m.category.contains("Code"))
-            {
-                vec![ModelSelection {
-                    name: model.name.clone(),
-                    quant: Some(model.best_quant.clone()),
-                }]
-            } else if !profile.recommended_combos.is_empty() {
-                let combo = profile.recommended_combos.first().unwrap();
-                vec![
-                    ModelSelection {
-                        name: combo.standard_model.name.clone(),
-                        quant: Some(combo.standard_model.best_quant.clone()),
-                    },
-                    ModelSelection {
-                        name: combo.autocomplete_model.name.clone(),
-                        quant: Some(combo.autocomplete_model.best_quant.clone()),
-                    },
-                ]
+                .filter(|m| {
+                    !m.is_autocomplete
+                        && m.category.contains("Code")
+                        && m.name.to_lowercase().contains("instruct")
+                })
+                .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+
+            if let Some(p) = primary {
+                let mut models = vec![ModelSelection {
+                    name: p.name.clone(),
+                    quant: Some(p.best_quant.clone()),
+                }];
+
+                let remaining = profile.available_memory_gb - p.memory_gb;
+                if let Some(sec) = profile
+                    .recommended_models
+                    .iter()
+                    .filter(|m| m.is_autocomplete && m.memory_gb <= remaining && m.name != p.name)
+                    .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))
+                {
+                    models.push(ModelSelection {
+                        name: sec.name.clone(),
+                        quant: Some(sec.best_quant.clone()),
+                    });
+                }
+                models
             } else {
                 vec![ModelSelection {
                     name: recommended_model.to_string(),
@@ -498,50 +559,23 @@ pub fn prompt_user(
         ));
     }
 
-    let default_choice = args
-        .models
-        .as_ref()
-        .and_then(|m| m.first())
-        .map(|s| s.as_str())
-        .unwrap_or(recommended_model);
-
+    // ── Step 1: Select the primary model ──────────────────────────────
     let is_dynamic = !profile.recommended_models.is_empty();
-    let has_combos = !profile.recommended_combos.is_empty();
 
-    let use_combos = if has_combos && !args.yes {
-        let choice = inquire::Select::new(
-            "How would you like to run the models?",
-            vec![
-                "Single Model (Default)",
-                "Normal Model + Small Autocomplete Model",
-            ],
-        )
-        .prompt()?;
-        choice.starts_with("Normal Model")
-    } else {
-        false
-    };
-
-    let all_options: Vec<String> = if use_combos {
-        profile
-            .recommended_combos
-            .iter()
-            .filter(|c| {
-                (c.standard_model.category.contains("Code")
-                    || c.autocomplete_model.category.contains("Code"))
-                    && c.standard_model.name.to_lowercase().contains("instruct")
-            })
-            .map(|c| format!("{} (Score: {:.1})", c.name, c.score))
-            .collect()
-    } else if is_dynamic {
+    // Build primary model options — non-autocomplete coding/instruct models
+    let primary_options: Vec<String> = if is_dynamic {
         profile
             .recommended_models
             .iter()
-            .filter(|m| m.category.contains("Code") && m.name.to_lowercase().contains("instruct"))
+            .filter(|m| {
+                !m.is_autocomplete
+                    && (m.category.contains("Code") || m.category.contains("Reasoning"))
+                    && m.name.to_lowercase().contains("instruct")
+            })
             .map(|m| {
                 format!(
-                    "{} (Score: {:.1}, Quant: {})",
-                    m.name, m.score, m.best_quant
+                    "{} ({}, {:.1} GB, Score: {:.1})",
+                    m.name, m.best_quant, m.memory_gb, m.score
                 )
             })
             .collect()
@@ -553,72 +587,114 @@ pub fn prompt_user(
             .collect()
     };
 
-    let mut default_indices = Vec::new();
-
-    // Add recommended model by default if it's in the list
-    if let Some(idx) = all_options.iter().position(|x| x.contains(default_choice)) {
-        default_indices.push(idx);
+    if primary_options.is_empty() {
+        anyhow::bail!("No compatible models found for your hardware.");
     }
 
-    if default_indices.is_empty() && !all_options.is_empty() {
-        default_indices.push(0);
-    }
+    let default_choice = args
+        .models
+        .as_ref()
+        .and_then(|m| m.first())
+        .map(|s| s.as_str())
+        .unwrap_or(recommended_model);
 
-    default_indices.sort();
-    default_indices.dedup();
+    let default_idx = primary_options
+        .iter()
+        .position(|x| x.contains(default_choice))
+        .unwrap_or(0);
 
-    let selected_options = inquire::MultiSelect::new(
-        "Which models would you like to install and use?",
-        all_options,
+    let primary_choice = inquire::Select::new(
+        "Select primary model:",
+        primary_options,
     )
-    .with_default(&default_indices)
-    .with_help_message("Use Space to select/deselect, Enter to confirm. Type to filter.")
+    .with_starting_cursor(default_idx)
+    .with_help_message("This is the main reasoning/coding model. Arrow keys to navigate, Enter to select.")
     .with_page_size(10)
     .prompt()?;
 
-    if selected_options.is_empty() {
-        anyhow::bail!("You must select at least one option.");
-    }
+    // Parse the selection back to a RecommendedModel
+    let primary_name = primary_choice
+        .find(" (")
+        .map(|i| &primary_choice[..i])
+        .unwrap_or(&primary_choice);
 
     let mut selected_models = Vec::new();
-    for opt in selected_options {
-        let mut final_name = opt.clone();
-        if let Some(idx) = opt.find(" (") {
-            final_name = opt[..idx].to_string();
-        }
 
-        if use_combos {
-            if let Some(combo) = profile
-                .recommended_combos
-                .iter()
-                .find(|c| c.name == final_name)
-            {
-                selected_models.push(ModelSelection {
-                    name: combo.standard_model.name.clone(),
-                    quant: Some(combo.standard_model.best_quant.clone()),
-                });
-                selected_models.push(ModelSelection {
-                    name: combo.autocomplete_model.name.clone(),
-                    quant: Some(combo.autocomplete_model.best_quant.clone()),
-                });
+    if let Some(primary) = profile
+        .recommended_models
+        .iter()
+        .find(|m| m.name == primary_name)
+    {
+        selected_models.push(ModelSelection {
+            name: primary.name.clone(),
+            quant: Some(primary.best_quant.clone()),
+        });
+
+        // ── Step 2: Select the secondary model (dynamic based on remaining VRAM) ──
+        let remaining_vram = profile.available_memory_gb - primary.memory_gb;
+
+        // Filter autocomplete models that fit in remaining VRAM
+        let secondary_candidates: Vec<&crate::profiling::RecommendedModel> = profile
+            .recommended_models
+            .iter()
+            .filter(|m| {
+                m.is_autocomplete
+                    && m.memory_gb <= remaining_vram
+                    && m.name != primary.name
+            })
+            .collect();
+
+        if !secondary_candidates.is_empty() {
+            let mut secondary_options: Vec<String> = vec!["Skip (single model only)".to_string()];
+            secondary_options.extend(secondary_candidates.iter().map(|m| {
+                format!(
+                    "{} ({}, {:.1} GB, Score: {:.1})",
+                    m.name, m.best_quant, m.memory_gb, m.score
+                )
+            }));
+
+            let secondary_choice = inquire::Select::new(
+                &format!(
+                    "Select secondary/autocomplete model ({:.1} GB VRAM remaining):",
+                    remaining_vram
+                ),
+                secondary_options,
+            )
+            .with_starting_cursor(1.min(secondary_candidates.len())) // default to first real model
+            .with_help_message("Smaller model for fast sub-agent/autocomplete tasks. 'Skip' for single model.")
+            .with_page_size(10)
+            .prompt()?;
+
+            if !secondary_choice.starts_with("Skip") {
+                let sec_name = secondary_choice
+                    .find(" (")
+                    .map(|i| &secondary_choice[..i])
+                    .unwrap_or(&secondary_choice);
+
+                if let Some(sec) = profile
+                    .recommended_models
+                    .iter()
+                    .find(|m| m.name == sec_name)
+                {
+                    selected_models.push(ModelSelection {
+                        name: sec.name.clone(),
+                        quant: Some(sec.best_quant.clone()),
+                    });
+                }
             }
-        } else if is_dynamic {
-            if let Some(model) = profile
-                .recommended_models
-                .iter()
-                .find(|m| m.name == final_name)
-            {
-                selected_models.push(ModelSelection {
-                    name: model.name.clone(),
-                    quant: Some(model.best_quant.clone()),
-                });
-            }
-        } else {
-            selected_models.push(ModelSelection {
-                name: final_name,
-                quant: None,
-            });
+        } else if remaining_vram > 0.5 {
+            println!(
+                "  {} No autocomplete models fit in remaining {:.1} GB VRAM — using single model.",
+                crate::style("ℹ").blue(),
+                remaining_vram
+            );
         }
+    } else {
+        // Fallback for non-dynamic (static model list)
+        selected_models.push(ModelSelection {
+            name: primary_name.to_string(),
+            quant: None,
+        });
     }
 
     let run_in_docker = Confirm::new("Do you want to run this using llama.cpp via Docker?")
@@ -809,18 +885,19 @@ mod tests {
             gpu_count: 1,
             unified_memory: false,
             recommended_models: vec![],
-            recommended_combos: vec![],
+            available_memory_gb: 16.0,
         };
         let models = vec![ModelSelection {
             name: "Qwen2.5-Coder-7B-Instruct".to_string(),
             quant: Some("Q8_0".to_string()),
         }];
         let args = LlamaServerArgs::from_hardware(&profile, &models);
-        // VRAM-based: 7B Q8_0 on 16GB with q8_0 KV → quality cap 49152 clamped to MIN_CTX 65536
-        assert_eq!(args.ctx_size, Some(65536));
-        assert_eq!(args.n_gpu_layers, Some(999)); // 7B Q8_0 ≈ 7.35 GB fits in 16 GB
+        // Qwen 7B: native 32768, capped at native (no YaRN extension).
+        // KV q8_0 selected (VRAM headroom > 2 GB). VRAM fits 32768 easily.
+        assert_eq!(args.ctx_size, Some(32768));
+        assert_eq!(args.n_gpu_layers, Some(999)); // 7B Q8_0 ≈ 7 GB fits in 16 GB
         assert_eq!(args.flash_attn, Some("on".to_string())); // CUDA → flash on
-        assert_eq!(args.cache_type_k, Some("q8_0".to_string())); // 8.15GB headroom > 4GB → q8_0
+        assert_eq!(args.cache_type_k, Some("q8_0".to_string())); // headroom > 2 GB → q8_0
         assert_eq!(
             args.extra_args.get("slot-save-path").unwrap(),
             &serde_json::json!("/models")
@@ -834,11 +911,11 @@ mod tests {
     #[test]
     fn test_calculate_max_ctx_known_values() {
         // Qwen 7B Q8_0 on 16GB with q8_0 KV cache
-        // VRAM allows ~131k, quality cap is 49152, but MIN_CTX floor is 65536
+        // Capped at native 32768 (no YaRN extension)
         let ctx = LlamaServerArgs::calculate_max_ctx(16.0, 7.0, "Q8_0", "q8_0", "Qwen2.5-Coder-7B-Instruct");
-        assert_eq!(ctx, 65536, "7B on 16GB: quality cap 49152 clamped to MIN_CTX 65536");
+        assert_eq!(ctx, 32768, "7B on 16GB: capped at native 32768");
 
-        // 14B Q4_K_M on 12GB with q4_0 KV cache (14B → 2.0× factor, native 32768 → quality cap 65536)
+        // 14B Q4_K_M on 12GB with q4_0 KV cache — capped at native 32768
         let ctx = LlamaServerArgs::calculate_max_ctx(12.0, 14.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-14B-Instruct");
         assert!(ctx >= 8192, "Expected ≥8192, got {ctx}");
 
@@ -846,18 +923,26 @@ mod tests {
         let ctx = LlamaServerArgs::calculate_max_ctx(8.0, 7.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-7B-Instruct");
         assert!(ctx >= 16384, "Expected ≥16384, got {ctx}");
 
-        // Tiny VRAM — model doesn't fit, but minimum is 65536 for Claude Code
+        // Tiny VRAM — model doesn't fit, returns min(native, 8192)
         let ctx = LlamaServerArgs::calculate_max_ctx(2.0, 7.0, "Q8_0", "q8_0", "Qwen2.5-Coder-7B-Instruct");
-        assert_eq!(ctx, 65536);
+        assert!(ctx >= 8192 && ctx <= 32768, "Tiny VRAM ctx should be reasonable, got {ctx}");
 
-        // DeepSeek 7B has 131072 native context → high cap even for 7B
+        // DeepSeek 7B has 131072 native context — VRAM limits it below that
         let ctx = LlamaServerArgs::calculate_max_ctx(16.0, 7.0, "Q8_0", "q8_0", "DeepSeek-Coder-V2-Lite-7B");
-        assert!(ctx >= 49152, "DeepSeek should allow extended context, got {ctx}");
+        assert!(ctx >= 49152, "DeepSeek should allow large context, got {ctx}");
+
+        // UD-Q4_K_XL quant — bpp is slightly higher than Q4_K_M so less ctx fits
+        let ctx_ud = LlamaServerArgs::calculate_max_ctx(16.0, 14.0, "UD-Q4_K_XL", "q4_0", "Qwen2.5-Coder-14B-Instruct");
+        let ctx_std = LlamaServerArgs::calculate_max_ctx(16.0, 14.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-14B-Instruct");
+        // UD-Q4_K_XL uses ~12% more memory for weights, so calculated ctx should be ≤ Q4_K_M's
+        assert!(ctx_ud <= ctx_std, "UD ctx {ctx_ud} should be ≤ standard ctx {ctx_std}");
+        // Both capped at native 32768 for Qwen 14B
+        assert!(ctx_ud >= 8192, "UD ctx {ctx_ud} should be at least 8192");
     }
 
     #[test]
     fn test_quality_cap_per_model_family() {
-        // Qwen 7B: native 32768 × 1.5 = 49152
+        // Qwen 7B: native 32768 (capped here, no YaRN extension)
         assert_eq!(LlamaServerArgs::native_ctx_length("Qwen2.5-Coder-7B-Instruct"), 32768);
         // Qwen 72B: native 131072
         assert_eq!(LlamaServerArgs::native_ctx_length("Qwen2.5-Coder-72B-Instruct"), 131072);
@@ -880,6 +965,29 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_quant_bpp() {
+        // Standard quants pass through unchanged
+        let q4_bpp = LlamaServerArgs::normalize_quant_bpp("Q4_K_M");
+        assert_eq!(q4_bpp, 0.58);
+        assert_eq!(LlamaServerArgs::normalize_quant_bpp("Q8_0"), 1.05);
+
+        // UD- prefix stripped, base quant used
+        assert_eq!(LlamaServerArgs::normalize_quant_bpp("UD-Q8_0"), 1.05);
+
+        // _XL suffix → base_M × 1.12
+        let ud_q4_xl = LlamaServerArgs::normalize_quant_bpp("UD-Q4_K_XL");
+        assert!((ud_q4_xl - 0.58 * 1.12).abs() < 0.001, "UD-Q4_K_XL ≈ 0.6496, got {ud_q4_xl}");
+
+        // _XS suffix → base_M × 0.90
+        let ud_q4_xs = LlamaServerArgs::normalize_quant_bpp("UD-Q4_K_XS");
+        assert!((ud_q4_xs - 0.58 * 0.90).abs() < 0.001, "UD-Q4_K_XS ≈ 0.522, got {ud_q4_xs}");
+
+        // Non-UD _XL (hypothetical) also works
+        let q5_xl = LlamaServerArgs::normalize_quant_bpp("Q5_K_XL");
+        assert!((q5_xl - 0.68 * 1.12).abs() < 0.001, "Q5_K_XL ≈ 0.7616, got {q5_xl}");
+    }
+
+    #[test]
     fn test_from_hardware_vulkan_no_flash_attn() {
         let profile = HardwareProfile {
             vram_gb: 8.0,
@@ -890,7 +998,7 @@ mod tests {
             gpu_count: 1,
             unified_memory: false,
             recommended_models: vec![],
-            recommended_combos: vec![],
+            available_memory_gb: 8.0,
         };
         let models = vec![ModelSelection {
             name: "Qwen2.5-Coder-7B-Instruct".to_string(),
@@ -912,7 +1020,7 @@ mod tests {
             gpu_count: 1,
             unified_memory: true,
             recommended_models: vec![],
-            recommended_combos: vec![],
+            available_memory_gb: 16.0,
         };
         let models = vec![ModelSelection {
             name: "Qwen2.5-Coder-7B-Instruct".to_string(),
@@ -935,7 +1043,7 @@ mod tests {
             gpu_count: 1,
             unified_memory: false,
             recommended_models: vec![],
-            recommended_combos: vec![],
+            available_memory_gb: 4.0,
         };
         let models = vec![ModelSelection {
             name: "Qwen2.5-Coder-7B-Instruct".to_string(),
@@ -984,6 +1092,45 @@ mod tests {
         assert!(cli.contains("--n-gpu-layers 0"));
         assert!(cli.contains("--flash-attn off"));
         assert!(cli.contains("--cache-type-k f16"));
+    }
+
+    #[test]
+    fn test_for_secondary_model() {
+        let profile = HardwareProfile {
+            vram_gb: 16.0,
+            ram_gb: 32.0,
+            cpu_cores: 16,
+            gpu_name: Some("NVIDIA GeForce RTX 5060 Ti".to_string()),
+            gpu_backend: llmfit_core::hardware::GpuBackend::Cuda,
+            gpu_count: 1,
+            unified_memory: false,
+            recommended_models: vec![],
+            available_memory_gb: 16.0,
+        };
+        let primary = LlamaServerArgs {
+            ctx_size: Some(65536),
+            n_gpu_layers: Some(999),
+            flash_attn: Some("on".to_string()),
+            cache_type_k: Some("q8_0".to_string()),
+            cache_type_v: Some("q8_0".to_string()),
+            extra_args: {
+                let mut e = HashMap::new();
+                e.insert("threads".to_string(), serde_json::json!(8));
+                e
+            },
+        };
+
+        // phi-3-mini has native 4096, ctx = max(4096, 8192) = 8192 floor
+        let mini = ModelSelection {
+            name: "microsoft/phi-3-mini-4k-instruct".to_string(),
+            quant: Some("Q8_0".to_string()),
+        };
+        let secondary = LlamaServerArgs::for_secondary_model(&primary, &mini, &profile);
+        assert_eq!(secondary.ctx_size, Some(8192), "phi-3-mini should get 8192 (floor)");
+        assert_eq!(secondary.cache_type_k, Some("q4_0".to_string()), "secondary uses q4_0 KV to conserve VRAM");
+        assert_eq!(secondary.n_gpu_layers, Some(999), "small model fits in VRAM");
+        let cli = secondary.to_cli_args();
+        assert!(!cli.contains("--ctx-size 65536"), "Must NOT inherit primary's 65k ctx");
     }
     #[test]
     fn test_llama_server_args_deserialize_dynamic() {

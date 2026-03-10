@@ -1,6 +1,24 @@
 use anyhow::Result;
 use llmfit_core::hardware::GpuBackend;
 
+/// Upgrade a standard llmfit quant to the corresponding Unsloth Dynamic (UD-*_XL)
+/// variant. UD quants use per-layer mixed precision: important attention layers get
+/// higher precision while less sensitive layers stay compressed. The _XL suffix
+/// means *more* layers promoted → better quality at ~12% size increase.
+///
+/// Unsloth publishes UD-GGUF files on HuggingFace under `unsloth/{model}-GGUF`.
+fn upgrade_to_ud(quant: &str) -> String {
+    match quant {
+        "Q2_K"   => "UD-Q2_K_XL".to_string(),
+        "Q3_K_M" => "UD-Q3_K_XL".to_string(),
+        "Q4_K_M" => "UD-Q4_K_XL".to_string(),
+        "Q5_K_M" => "UD-Q5_K_XL".to_string(),
+        "Q6_K"   => "UD-Q6_K_XL".to_string(),
+        "Q8_0"   => "UD-Q8_0".to_string(),
+        other    => other.to_string(), // F16, mlx-*, etc. — unchanged
+    }
+}
+
 pub struct HardwareProfile {
     pub vram_gb: f32,
     pub ram_gb: f32,
@@ -12,15 +30,8 @@ pub struct HardwareProfile {
     pub gpu_count: u32,
     pub unified_memory: bool,
     pub recommended_models: Vec<RecommendedModel>,
-    pub recommended_combos: Vec<RecommendedCombo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RecommendedCombo {
-    pub name: String,
-    pub standard_model: RecommendedModel,
-    pub autocomplete_model: RecommendedModel,
-    pub score: f32,
+    /// Total available memory for model loading (VRAM if GPU, RAM if CPU-only)
+    pub available_memory_gb: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +40,13 @@ pub struct RecommendedModel {
     pub category: String,
     pub score: f32,
     pub best_quant: String,
+    /// Estimated memory footprint in GB (weights + KV overhead)
+    pub memory_gb: f32,
+    /// Parameter count in billions (for VRAM budget calculations)
+    #[allow(dead_code)]
+    pub params_b: f32,
+    /// Whether this is an autocomplete-sized model (≤3B)
+    pub is_autocomplete: bool,
 }
 
 pub async fn profile_hardware() -> Result<HardwareProfile> {
@@ -63,25 +81,20 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
     let ranked = llmfit_core::fit::rank_models_by_fit(fits);
 
     let mut recommended_models = Vec::new();
-    let mut standard_fits = Vec::new();
-    let mut autocomplete_fits = Vec::new();
 
     for fit in &ranked {
+        let is_auto = crate::runner::is_autocomplete_model(&fit.model.name);
         recommended_models.push(RecommendedModel {
             name: fit.model.name.clone(),
             category: format!("{:?}", fit.model.use_case),
             score: fit.score as f32,
-            best_quant: fit.best_quant.clone(),
+            best_quant: upgrade_to_ud(&fit.best_quant),
+            memory_gb: fit.memory_required_gb as f32,
+            params_b: fit.model.params_b() as f32,
+            is_autocomplete: is_auto,
         });
-
-        if crate::runner::is_autocomplete_model(&fit.model.name) {
-            autocomplete_fits.push(fit);
-        } else {
-            standard_fits.push(fit);
-        }
     }
 
-    let mut recommended_combos = Vec::new();
     let available_memory = if specs.has_gpu {
         specs
             .total_gpu_vram_gb
@@ -90,38 +103,6 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
     } else {
         specs.available_ram_gb
     };
-
-    for std_fit in &standard_fits {
-        for auto_fit in &autocomplete_fits {
-            if std_fit.memory_required_gb + auto_fit.memory_required_gb <= available_memory {
-                let combo_name = format!("{} + {}", std_fit.model.name, auto_fit.model.name);
-                let score = (std_fit.score * 0.7) + (auto_fit.score * 0.3);
-
-                recommended_combos.push(RecommendedCombo {
-                    name: combo_name,
-                    standard_model: RecommendedModel {
-                        name: std_fit.model.name.clone(),
-                        category: format!("{:?}", std_fit.model.use_case),
-                        score: std_fit.score as f32,
-                        best_quant: std_fit.best_quant.clone(),
-                    },
-                    autocomplete_model: RecommendedModel {
-                        name: auto_fit.model.name.clone(),
-                        category: format!("{:?}", auto_fit.model.use_case),
-                        score: auto_fit.score as f32,
-                        best_quant: auto_fit.best_quant.clone(),
-                    },
-                    score: score as f32,
-                });
-            }
-        }
-    }
-
-    recommended_combos.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
 
     Ok(HardwareProfile {
         vram_gb,
@@ -132,7 +113,7 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
         gpu_count,
         unified_memory,
         recommended_models,
-        recommended_combos,
+        available_memory_gb: available_memory as f32,
     })
 }
 

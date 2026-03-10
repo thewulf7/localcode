@@ -30,7 +30,10 @@ pub async fn extract_hf_repo_and_file(
             base_name = &base_name[..base_name.len() - 5];
         }
 
-        let repo = format!("bartowski/{}-GGUF", base_name);
+        // UD- (Unsloth Dynamic) quants are published by `unsloth`;
+        // standard GGUF quants are published by `bartowski`.
+        let repo_org = if q.starts_with("UD-") { "unsloth" } else { "bartowski" };
+        let repo = format!("{}/{}-GGUF", repo_org, base_name);
         let file = format!("{}-{}.gguf", base_name, q);
 
         return (repo, Some(file));
@@ -71,19 +74,30 @@ fn build_gguf_candidates(model_name: &str, quant: &str) -> Vec<(String, String)>
     }
 
     let file = format!("{}-{}.gguf", base_name, quant);
+    let is_ud = quant.starts_with("UD-");
     let mut candidates = Vec::new();
 
-    // 1. bartowski — the most common GGUF repacker
+    // 1. unsloth — publisher of UD (Unsloth Dynamic) quants; try first for UD-
+    if is_ud {
+        candidates.push((format!("unsloth/{}-GGUF", base_name), file.clone()));
+    }
+
+    // 2. bartowski — the most common GGUF repacker
     candidates.push((format!("bartowski/{}-GGUF", base_name), file.clone()));
 
-    // 2. Original org's own GGUF repo (some publishers have official GGUFs)
+    // 3. Original org's own GGUF repo (some publishers have official GGUFs)
     if !org.is_empty() {
         candidates.push((format!("{}/{}-GGUF", org, base_name), file.clone()));
         // Some orgs use lowercase "-gguf" suffix (e.g. microsoft)
         candidates.push((format!("{}/{}-gguf", org, base_name), file.clone()));
     }
 
-    // 3. lmstudio-community — another major GGUF publisher
+    // 4. unsloth fallback — also publishes standard quants for many models
+    if !is_ud {
+        candidates.push((format!("unsloth/{}-GGUF", base_name), file.clone()));
+    }
+
+    // 5. lmstudio-community — another major GGUF publisher
     candidates.push((
         format!("lmstudio-community/{}-GGUF", base_name),
         file,
@@ -110,13 +124,34 @@ fn find_best_gguf_in_repo(info: &hf_hub::api::RepoInfo, quant: &str) -> Option<S
     let q_lower = quant.to_lowercase();
 
     // Build search tokens from the quant string.
-    // Q4_K_M → ["q4_k_m", "q4_k", "q4"]
-    // Q8_0   → ["q8_0", "q8"]
+    // Q4_K_M    → ["q4_k_m", "q4_k", "q4"]
+    // Q8_0      → ["q8_0", "q8"]
+    // UD-Q4_K_XL → ["ud-q4_k_xl", "ud-q4_k", "ud-q4", "q4_k_xl", "q4_k", "q4"]
     let mut search_tokens = vec![q_lower.clone()];
     if let Some(pos) = q_lower.rfind('_') {
         search_tokens.push(q_lower[..pos].to_string());
         if let Some(pos2) = q_lower[..pos].rfind('_') {
             search_tokens.push(q_lower[..pos2].to_string());
+        }
+    }
+    // For UD- (Unsloth Dynamic) quants, also add tokens without the UD- prefix
+    // so we can match standard quant files as a fallback.
+    if q_lower.starts_with("ud-") {
+        let stripped = &q_lower[3..];
+        if !search_tokens.contains(&stripped.to_string()) {
+            search_tokens.push(stripped.to_string());
+        }
+        if let Some(pos) = stripped.rfind('_') {
+            let token = stripped[..pos].to_string();
+            if !search_tokens.contains(&token) {
+                search_tokens.push(token);
+            }
+            if let Some(pos2) = stripped[..pos].rfind('_') {
+                let token2 = stripped[..pos2].to_string();
+                if !search_tokens.contains(&token2) {
+                    search_tokens.push(token2);
+                }
+            }
         }
     }
 
@@ -323,55 +358,13 @@ fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<Strin
     None
 }
 
-/// Infer the GGUF architecture key from a HuggingFace model name.
-///
-/// llama-server caps per-slot context to `n_ctx_train` (from GGUF metadata).
-/// To extend beyond the native context window we need:
-///   `--override-kv {arch}.context_length=int:{ctx_size}`
-/// The `{arch}` prefix is model-family-specific and stored in the GGUF under
-/// `general.architecture`. We infer it from the model name.
-fn gguf_arch_key(model_name: &str) -> Option<&'static str> {
-    let lower = model_name.to_lowercase();
-    if lower.contains("qwen") {
-        Some("qwen2")
-    } else if lower.contains("llama") || lower.contains("codellama") {
-        Some("llama")
-    } else if lower.contains("mistral") || lower.contains("codestral") {
-        Some("mistral")
-    } else if lower.contains("gemma") || lower.contains("codegemma") {
-        Some("gemma2")
-    } else if lower.contains("phi") {
-        Some("phi3")
-    } else if lower.contains("starcoder") || lower.contains("starcode") {
-        Some("starcoder2")
-    } else if lower.contains("deepseek") {
-        Some("deepseek2")
-    } else if lower.contains("command-r") || lower.contains("command_r") {
-        Some("command-r")
-    } else {
-        None
-    }
-}
-
-/// Extract the --ctx-size value from a CLI args string, if present.
-fn extract_ctx_size(args: &str) -> Option<u64> {
-    let mut parts = args.split_whitespace();
-    while let Some(part) = parts.next() {
-        if part == "--ctx-size" {
-            if let Some(val) = parts.next() {
-                return val.parse().ok();
-            }
-        }
-    }
-    None
-}
-
 pub async fn start_llama_swap_docker(
     models: &[ModelSelection],
     models_dir: &std::path::Path,
     port: u16,
     llama_server_args: Option<&crate::ui::LlamaServerArgs>,
     downloaded_files: &std::collections::HashMap<String, std::path::PathBuf>,
+    profile: Option<&crate::profiling::HardwareProfile>,
 ) -> Result<()> {
     println!("📦 Launching localcode container...");
 
@@ -452,11 +445,23 @@ pub async fn start_llama_swap_docker(
             String::new()
         };
 
-        let mut custom_args = llama_server_args
-            .map(|a| a.to_cli_args())
-            // Claude Code's system prompt + tool defs + conversation easily reach
-            // 30-40k tokens. 32768 is too tight; use 65536 as the safe default.
-            .unwrap_or_else(|| "--ctx-size 65536".to_string());
+        let mut custom_args = if assigned_aliases {
+            // Secondary/autocomplete model: compute lighter per-model args with
+            // ctx_size capped to the model's native training context.
+            if let (Some(primary), Some(prof)) = (llama_server_args, profile) {
+                let secondary_args = crate::ui::LlamaServerArgs::for_secondary_model(primary, m, prof);
+                secondary_args.to_cli_args()
+            } else {
+                llama_server_args
+                    .map(|a| a.to_cli_args())
+                    .unwrap_or_else(|| "--ctx-size 32768".to_string())
+            }
+        } else {
+            // Primary model: use the pre-computed args from from_hardware()
+            llama_server_args
+                .map(|a| a.to_cli_args())
+                .unwrap_or_else(|| "--ctx-size 32768".to_string())
+        };
 
         // Sanitize Windows absolute paths for Docker.
         // If an arg contains a path like C:\Users\..., rewrite it to use /models/ relative to the container.
@@ -482,24 +487,14 @@ pub async fn start_llama_swap_docker(
                 // auto-detecting a reasoning format (e.g. "deepseek" for Qwen) which
                 // disrupts grammar-constrained tool-call generation.
                 //
-                // --rope-scaling yarn + --override-kv: enables YaRN rope scaling
-                // so --ctx-size can exceed the model's native context length.
-                // llama-server caps per-slot context to GGUF's n_ctx_train;
-                // --override-kv raises that metadata value so the slot isn't capped.
-                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --reasoning-format none --rope-scaling yarn{}{}\n",
+                // Context is capped at the model's native training length
+                // (e.g. 32768 for Qwen2.5-7B).  YaRN rope scaling was removed
+                // because extending context beyond the training window causes
+                // attention degradation that produces gibberish — especially on
+                // ≤14B models doing structured tool-call generation.
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --reasoning-format none {}\n",
                 source_args,
-                // Inject --override-kv {arch}.context_length=int:{ctx_size} when we
-                // can infer the architecture and ctx_size exceeds typical defaults.
-                if let (Some(arch), Some(ctx)) = (gguf_arch_key(&m.name), extract_ctx_size(&custom_args)) {
-                    if ctx > 32768 {
-                        format!(" --override-kv {}.context_length=int:{}", arch, ctx)
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                },
-                format!(" {}", custom_args)
+                custom_args
             ));
             // strip_params: prevent Claude Code from overriding local model's
             // sampling settings (temperature, top_k, etc.) which degrades quality.
@@ -515,8 +510,7 @@ pub async fn start_llama_swap_docker(
             yaml_content
                 .push_str("      strip_params: \"temperature, top_k, top_p, repeat_penalty\"\n");
             yaml_content.push_str("      setParams:\n");
-            yaml_content.push_str("        tool_choice:\n");
-            yaml_content.push_str("          type: \"any\"\n");
+            yaml_content.push_str("        tool_choice: \"auto\"\n");
             yaml_content.push_str("    aliases:\n");
             // Claude 3.5 series — sonnet/opus → primary model
             yaml_content.push_str("      - \"claude-3-5-sonnet-20241022\"\n");
@@ -540,28 +534,23 @@ pub async fn start_llama_swap_docker(
             }
         } else {
             yaml_content.push_str(&format!(
-                // Secondary/autocomplete models use standard llama-server settings.
-                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --reasoning-format none --rope-scaling yarn{}{}\n",
+                // Secondary/autocomplete models.
+                "    cmd: llama-server --port ${{PORT}} {} --host 0.0.0.0 --jinja --reasoning-format none {}\n",
                 source_args,
-                if let (Some(arch), Some(ctx)) = (gguf_arch_key(&m.name), extract_ctx_size(&custom_args)) {
-                    if ctx > 32768 {
-                        format!(" --override-kv {}.context_length=int:{}", arch, ctx)
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                },
-                format!(" {}", custom_args)
+                custom_args
             ));
-            // Apply the same filters to the small model for consistent tool-call
-            // generation when Claude Code routes subagent requests via haiku aliases.
+            // Same filters for the small model.
             yaml_content.push_str("    filters:\n");
             yaml_content
-                .push_str("      strip_params: \"temperature, top_k, top_p, repeat_penalty\"\n");
+                .push_str("      strip_params: \"temperature, top_k, top_p, repeat_penalty, frequency_penalty, presence_penalty\"\n");
             yaml_content.push_str("      setParams:\n");
-            yaml_content.push_str("        tool_choice:\n");
-            yaml_content.push_str("          type: \"any\"\n");
+            yaml_content.push_str("        max_tokens: 2048\n");
+            yaml_content.push_str("        temperature: 0\n");
+            yaml_content.push_str("        top_p: 1.0\n");
+            yaml_content.push_str("        repeat_penalty: 1.3\n");
+            yaml_content.push_str("        frequency_penalty: 0.5\n");
+            yaml_content.push_str("        presence_penalty: 0.3\n");
+            yaml_content.push_str("        tool_choice: \"auto\"\n");
             // Haiku aliases → small model for subagent routing
             if is_autocomplete {
                 yaml_content.push_str("    aliases:\n");
@@ -751,23 +740,46 @@ mod tests {
 
     #[test]
     fn test_build_gguf_candidates() {
-        // Should try bartowski, original org (GGUF + gguf), and lmstudio-community
+        // Standard quant: bartowski first, then original org, unsloth, lmstudio-community
         let candidates = build_gguf_candidates("microsoft/phi-3-mini-4k-instruct", "Q4_K_M");
-        assert_eq!(candidates.len(), 4);
+        assert_eq!(candidates.len(), 5);
         assert_eq!(candidates[0].0, "bartowski/phi-3-mini-4k-instruct-GGUF");
         assert_eq!(candidates[1].0, "microsoft/phi-3-mini-4k-instruct-GGUF");
         assert_eq!(candidates[2].0, "microsoft/phi-3-mini-4k-instruct-gguf");
-        assert_eq!(candidates[3].0, "lmstudio-community/phi-3-mini-4k-instruct-GGUF");
-        // All should have the same filename
+        assert_eq!(candidates[3].0, "unsloth/phi-3-mini-4k-instruct-GGUF");
+        assert_eq!(candidates[4].0, "lmstudio-community/phi-3-mini-4k-instruct-GGUF");
         for (_, f) in &candidates {
             assert_eq!(f, "phi-3-mini-4k-instruct-Q4_K_M.gguf");
         }
 
-        // Without org prefix — only bartowski and lmstudio-community
+        // UD quant: unsloth first, then bartowski, org, lmstudio-community
+        let ud_candidates = build_gguf_candidates("microsoft/phi-3-mini-4k-instruct", "UD-Q4_K_XL");
+        assert_eq!(ud_candidates[0].0, "unsloth/phi-3-mini-4k-instruct-GGUF");
+        assert_eq!(ud_candidates[1].0, "bartowski/phi-3-mini-4k-instruct-GGUF");
+        for (_, f) in &ud_candidates {
+            assert_eq!(f, "phi-3-mini-4k-instruct-UD-Q4_K_XL.gguf");
+        }
+
+        // Without org prefix — bartowski, unsloth, lmstudio-community
         let candidates2 = build_gguf_candidates("some-model", "Q8_0");
-        assert_eq!(candidates2.len(), 2);
+        assert_eq!(candidates2.len(), 3);
         assert_eq!(candidates2[0].0, "bartowski/some-model-GGUF");
-        assert_eq!(candidates2[1].0, "lmstudio-community/some-model-GGUF");
+        assert_eq!(candidates2[1].0, "unsloth/some-model-GGUF");
+        assert_eq!(candidates2[2].0, "lmstudio-community/some-model-GGUF");
+    }
+
+    #[tokio::test]
+    async fn test_extract_hf_repo_and_file_ud_quant() {
+        // UD quants should route to unsloth repo
+        let quant = Some("UD-Q4_K_XL".to_string());
+        let (repo, file) = extract_hf_repo_and_file("Qwen/Qwen2.5-Coder-14B-Instruct", &quant).await;
+        assert_eq!(repo, "unsloth/Qwen2.5-Coder-14B-Instruct-GGUF");
+        assert_eq!(file, Some("Qwen2.5-Coder-14B-Instruct-UD-Q4_K_XL.gguf".to_string()));
+
+        // Standard quant should still use bartowski
+        let quant_std = Some("Q4_K_M".to_string());
+        let (repo2, _) = extract_hf_repo_and_file("Qwen/Qwen2.5-Coder-14B-Instruct", &quant_std).await;
+        assert_eq!(repo2, "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF");
     }
 
     #[test]

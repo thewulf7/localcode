@@ -332,7 +332,7 @@ Example with extra args:
 
 This produces:
 ```
---ctx-size 49152 --n-gpu-layers 999 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --threads 8 --parallel 2 --mlock --slot-save-path /models
+--ctx-size 32768 --n-gpu-layers 999 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --threads 8 --parallel 2 --mlock --slot-save-path /models
 ```
 
 Additionally, the `localcode start` command injects these **implicit flags** (not stored in `localcode.json`):
@@ -341,8 +341,7 @@ Additionally, the `localcode start` command injects these **implicit flags** (no
 |--------------|---------|
 | `--jinja` | Use model's built-in chat template for tool calling |
 | `--reasoning-format none` | Prevent misdetected reasoning format |
-| `--rope-scaling yarn` | Enable YaRN context extension |
-| `--override-kv {arch}.context_length=int:{ctx}` | Raise GGUF context cap (when ctx > 32768) |
+
 
 ### OpenCode Integration
 
@@ -423,11 +422,11 @@ Every parameter in `llama_server_args` is calculated from the hardware profile �
 
 Uses a dual-constraint formula (see [Context Token Alignment](#context-token-alignment-claude-code) for full details):
 
-$$\text{ctx\_size} = \min\!\Big(\frac{\text{VRAM} \times 0.90 - \text{params\_b} \times \text{bpp} - 0.5}{0.000008 \times \text{params\_b} \times \text{kv\_mult}},\; \text{native\_ctx} \times \text{YaRN\_factor}\Big)$$
+$$\text{ctx\_size} = \min\!\Big(\frac{\text{VRAM} \times 0.90 - \text{params\_b} \times \text{bpp} - 0.5}{0.000008 \times \text{params\_b} \times \text{kv\_mult}},\; \text{native\_ctx}\Big)$$
 
-Rounded down to nearest 1024, clamped to [2048, 131072].
+Rounded down to nearest 1024, floored at 8192. Context is **never** extended beyond the model's native training length — YaRN rope scaling causes attention degradation on ≤14B models during structured tool-call generation.
 
-**CPU-only fallback:** ≥32 GB RAM → 8192, ≥16 GB → 4096, else 2048.
+**CPU-only fallback:** Uses the model's native training context (e.g. 32768 for Qwen 7B). No YaRN extension.
 
 #### GPU Layer Offload (`n_gpu_layers`)
 
@@ -455,8 +454,8 @@ Rounded down to nearest 1024, clamped to [2048, 131072].
 
 | Condition | Type | Rationale |
 |-----------|------|-----------|
-| GPU + model quant contains `8` + headroom > 4 GB | `q8_0` | High-quality KV matched to weight quant |
-| GPU + tight VRAM | `q4_0` | Compressed KV to save memory |
+| GPU + headroom > 2 GB | `q8_0` | High-quality KV when VRAM allows |
+| GPU + tight VRAM (headroom ≤ 2 GB) | `q4_0` | Compressed KV to save memory |
 | CPU only | `f16` | Best quality when RAM is plentiful |
 
 Headroom = `VRAM - model_mem - 0.5 GB`.
@@ -512,13 +511,7 @@ The quality cap depends on each model family's training context length:
 | StarCoder 2 | 16,384 | |
 | Unknown models | 32,768 | Conservative fallback |
 
-**YaRN extension factors** (safe multiplier for rope scaling beyond training length):
-
-| Model Size | Factor | Quality Cap Example (32k native) |
-|------------|--------|----------------------------------|
-| ≤ 7B | 1.5× | 49,152 |
-| 8B – 20B | 2.0× | 65,536 |
-| > 20B | 2.5× | 81,920 |
+> **Why no YaRN rope scaling?** YaRN (Yet another RoPE extensioN) can extend context beyond the model's native training length. However, empirical testing showed that **any** context extension — even 1.5× — causes attention degradation on ≤14B models during structured tool-call generation, producing gibberish regardless of KV cache quantization or sampling parameters. Models requiring >32k context should use architectures with natively large windows (Llama 3.1 at 128k, DeepSeek at 128k, Qwen 2.5 32B/72B at 128k).
 
 ---
 
@@ -548,15 +541,19 @@ models:
       llama-server --port ${PORT}
         --model /models/Qwen2.5-Coder-7B-Instruct-Q8_0.gguf
         --host 0.0.0.0 --jinja --reasoning-format none
-        --rope-scaling yarn
-        --override-kv qwen2.context_length=int:49152
-        --ctx-size 49152 --n-gpu-layers 999
+        --ctx-size 32768 --n-gpu-layers 999
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
         --threads 8 --parallel 2 --mlock
-        --slot-save-path /models
+        --slot-save-path /models --predict 4096
     filters:
-      strip_params: "temperature, top_k, top_p, repeat_penalty"
+      strip_params: "temperature, top_k, top_p, repeat_penalty, frequency_penalty, presence_penalty"
       setParams:
+        max_tokens: 4096
+        temperature: 0
+        top_p: 1.0
+        repeat_penalty: 1.3
+        frequency_penalty: 0.5
+        presence_penalty: 0.3
         tool_choice:
           type: "any"
     aliases:
@@ -577,14 +574,17 @@ hooks:
 |------|---------|
 | `--jinja` | Use the model's built-in Jinja chat template for tool-call formatting |
 | `--reasoning-format none` | Prevent llama-server from auto-detecting a reasoning format (e.g., "deepseek" for Qwen models) which disrupts grammar-constrained tool generation |
-| `--rope-scaling yarn` | Enable YaRN (Yet another RoPE extensioN) to extend context beyond the model's native training length |
-| `--override-kv {arch}.context_length=int:{ctx}` | Override the GGUF metadata context cap so llama-server doesn't reject requests exceeding `n_ctx_train` |
 
 ### Proxy Filters
 
-**`strip_params`** — Removes Claude Code's sampling parameters (`temperature`, `top_k`, `top_p`, `repeat_penalty`) before they reach the local model. This prevents the cloud-tuned defaults from degrading local inference quality.
+**`strip_params`** — Removes Claude Code's sampling parameters (`temperature`, `top_k`, `top_p`, `repeat_penalty`, `frequency_penalty`, `presence_penalty`) before they reach the local model. This prevents the cloud-tuned defaults from degrading local inference quality.
 
-**`setParams: tool_choice: { type: "any" }`** — Forces llama-server's grammar-constrained tool-call generation to be active from the first token. Without this, the grammar is "lazy" — it only triggers when the model starts with the correct tool-call prefix (e.g. `<tool_call>\n`). Small models often start with markdown or XML instead, bypassing the grammar entirely and producing raw text instead of structured `tool_use` blocks.
+**`setParams`** — Injects local-optimal sampling settings after stripping cloud defaults:
+- **`temperature: 0`** — Greedy decoding for deterministic, structured tool-call output. Without this, llama-server defaults to 0.8 which causes incoherent text.
+- **`repeat_penalty: 1.3`** — Strong penalty for repeated tokens to prevent the model from entering repetition loops (e.g. "for for for for or for").
+- **`frequency_penalty: 0.5`** / **`presence_penalty: 0.3`** — Additional anti-repetition mechanisms that penalize tokens based on how often they've appeared.
+- **`max_tokens: 4096`** — Caps generation length to prevent runaway output if the model does start looping.
+- **`tool_choice: { type: "any" }`** — Forces llama-server's grammar-constrained tool-call generation to be active from the first token. Without this, the grammar is "lazy" — it only triggers when the model starts with the correct tool-call prefix (e.g. `<tool_call>\n`). Small models often start with markdown or XML instead, bypassing the grammar entirely and producing raw text instead of structured `tool_use` blocks.
 
 ### Model Aliases
 
@@ -600,21 +600,6 @@ When only a single model is configured (no combo), all aliases — including hai
 ### Dual-Model VRAM Budget
 
 When two models are loaded simultaneously, `from_hardware()` subtracts the autocomplete model's memory footprint (weights + ~0.3 GB overhead for its KV cache/compute buffers) from the VRAM budget before calculating the primary model's context size, GPU layer offload, and parallel slot count. This ensures the primary model's KV cache doesn't compete with the secondary model for VRAM.
-
-### Architecture Key Inference
-
-The `--override-kv` flag requires the GGUF architecture prefix. LocalCode infers it from the model name:
-
-| Model Family | Architecture Key | Used In Override |
-|--------------|-----------------|------------------|
-| Qwen / Qwen2.5 / Qwen3 | `qwen2` | `qwen2.context_length` |
-| Llama / CodeLlama | `llama` | `llama.context_length` |
-| Mistral / Codestral | `mistral` | `mistral.context_length` |
-| Gemma / CodeGemma | `gemma2` | `gemma2.context_length` |
-| Phi-3 / Phi-3.5 | `phi3` | `phi3.context_length` |
-| StarCoder 2 | `starcoder2` | `starcoder2.context_length` |
-| DeepSeek | `deepseek2` | `deepseek2.context_length` |
-| Command-R | `command-r` | `command-r.context_length` |
 
 ---
 
@@ -655,11 +640,11 @@ $$\text{vram\_ctx} = \frac{\text{effective\_vram} \times 0.90 - \text{params\_b}
 
 Where `effective_vram = VRAM − secondary_model_mem`. When a combo is configured, the autocomplete model's weight memory plus ~0.3 GB overhead is subtracted from the total VRAM before computing the primary model's context budget. For single-model setups, `effective_vram = VRAM`.
 
-**2. Quality Ceiling** — what the model can handle without attention degradation:
+**2. Native Context Ceiling** — the model's training context length:
 
-$$\text{quality\_cap} = \text{native\_ctx} \times \text{YaRN\_factor}$$
+Context is **never** extended beyond `native_ctx`. YaRN rope scaling is disabled because it causes attention degradation on ≤14B models during structured tool-call generation.
 
-The final `ctx_size = min(vram_ctx, quality_cap)`, rounded down to nearest 1024 and clamped to [2048, 131072].
+The final `ctx_size = min(vram_ctx, native_ctx)`, rounded down to nearest 1024, floored at 8192.
 
 | Variable | Meaning | Examples |
 |----------|---------|----------|
@@ -667,7 +652,6 @@ The final `ctx_size = min(vram_ctx, quality_cap)`, rounded down to nearest 1024 
 | `bpp` | Bytes per parameter for weight quant | Q8_0 = 1.05, Q4_K_M = 0.58 |
 | `kv_mult` | KV cache multiplier vs f16 | q8_0 = 0.5, q4_0 = 0.25, f16 = 1.0 |
 | `native_ctx` | Model's training context length | 32768 (Qwen 7B), 131072 (Llama 3.1) |
-| `YaRN_factor` | Safe rope extension by model size | ≤7B = 1.5×, 8-20B = 2.0×, >20B = 2.5× |
 
 **Example:** Qwen 7B Q8_0 on 16 GB VRAM with q8_0 KV cache:
 
@@ -676,19 +660,17 @@ VRAM budget:
   model_weights = 7.0 × 1.05 = 7.35 GB
   usable VRAM   = 16 × 0.90  = 14.4 GB
   free for KV   = 14.4 − 7.35 − 0.5 = 6.55 GB
-  KV per token  = 0.000008 × 7.0 × 0.5 = 0.000028 GB
+  KV per token  = 0.000008 × 7.0 × 0.5 = 0.000028 GB  (q8_0 — headroom > 2 GB)
   vram_ctx      = 6.55 / 0.000028 ≈ 233,928
 
-Quality ceiling:
+Native context ceiling:
   native_ctx    = 32,768 (Qwen 2.5 7B)
-  YaRN_factor   = 1.5 (≤7B model)
-  quality_cap   = 32,768 × 1.5 = 49,152
 
-Final: min(233928, 49152) = 49,152  ← quality is the bottleneck, not VRAM
+Final: min(233928, 32768) = 32,768  ← native context is the bottleneck, not VRAM
 ```
 
 > [!NOTE]
-> **For Claude Code usage**, VRAM is rarely the bottleneck — the model's training context × YaRN multiplier is. A 7B model on 16GB has plenty of VRAM headroom but can only reliably handle ~49k tokens. To get larger context, use a model family with a larger native window (e.g., Llama 3.1 at 128k, DeepSeek at 128k, or Qwen 72B at 128k).
+> **For Claude Code usage**, VRAM is rarely the bottleneck — the model's native training context is. A 7B model on 16GB has plenty of VRAM headroom but is capped at 32k (its training length). To get larger context, use a model family with a natively larger window (e.g., Llama 3.1 at 128k, DeepSeek at 128k, or Qwen 2.5 72B at 128k).
 
 ### How to Calculate `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
 
