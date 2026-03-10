@@ -52,6 +52,11 @@ pub async fn profile_hardware() -> Result<HardwareProfile> {
 
     let mut fits = Vec::new();
     for m in models {
+        // Only keep GGUF-compatible models — llama-server cannot run MLX or GPTQ weights.
+        let name_lower = m.name.to_lowercase();
+        if name_lower.contains("mlx") || name_lower.contains("gptq") {
+            continue;
+        }
         fits.push(llmfit_core::fit::ModelFit::analyze(m, &specs));
     }
 

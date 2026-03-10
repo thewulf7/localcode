@@ -151,15 +151,19 @@ impl LlamaServerArgs {
         let overhead = 0.5_f64; // CUDA/Metal context + compute buffers
         let usable_vram = vram_gb * 0.90; // 10% safety margin
 
+        // Claude Code's system prompt + tool definitions consume ~20-30k
+        // tokens, so anything below 64k is unusable. Use 65536 as the floor.
+        const MIN_CTX: u32 = 65536;
+
         let free_for_kv = usable_vram - model_mem - overhead;
         if free_for_kv <= 0.0 {
-            return 2048;
+            return MIN_CTX;
         }
 
         let kv_mult = Self::kv_cache_multiplier(kv_cache_type);
         let kv_per_token_gb = 0.000008 * params_b * kv_mult;
         if kv_per_token_gb <= 0.0 {
-            return 2048;
+            return MIN_CTX;
         }
 
         let vram_ctx = (free_for_kv / kv_per_token_gb) as u32;
@@ -169,9 +173,9 @@ impl LlamaServerArgs {
         let quality_cap = (native_ctx as f64 * Self::yarn_extension_factor(params_b)) as u32;
 
         let effective = vram_ctx.min(quality_cap);
-        // Round down to nearest 1024, clamp to [2048, 131072]
+        // Round down to nearest 1024, clamp to [MIN_CTX, 131072]
         let rounded = (effective / 1024) * 1024;
-        rounded.clamp(2048, 131072)
+        rounded.clamp(MIN_CTX, 131072)
     }
 
     pub fn from_hardware(profile: &HardwareProfile, models: &[ModelSelection]) -> Self {
@@ -229,14 +233,12 @@ impl LlamaServerArgs {
         };
 
         // ── Context size ───────────────────────────────────────────────────
+        // Claude Code needs at least ~64k context (system prompt + tools alone
+        // consume 20-30k tokens). Even on CPU we set 65536 as the floor.
         let ctx_size = if has_gpu {
             Self::calculate_max_ctx(effective_vram, params_b, model_quant, &kv_quant, model_name)
-        } else if profile.ram_gb >= 32.0 {
-            8192
-        } else if profile.ram_gb >= 16.0 {
-            4096
         } else {
-            2048
+            65536
         };
 
         // ── GPU layer offload ──────────────────────────────────────────────
@@ -814,8 +816,8 @@ mod tests {
             quant: Some("Q8_0".to_string()),
         }];
         let args = LlamaServerArgs::from_hardware(&profile, &models);
-        // VRAM-based: 7B Q8_0 on 16GB with q8_0 KV → quality-capped at 32768×1.5 = 49152
-        assert_eq!(args.ctx_size, Some(49152));
+        // VRAM-based: 7B Q8_0 on 16GB with q8_0 KV → quality cap 49152 clamped to MIN_CTX 65536
+        assert_eq!(args.ctx_size, Some(65536));
         assert_eq!(args.n_gpu_layers, Some(999)); // 7B Q8_0 ≈ 7.35 GB fits in 16 GB
         assert_eq!(args.flash_attn, Some("on".to_string())); // CUDA → flash on
         assert_eq!(args.cache_type_k, Some("q8_0".to_string())); // 8.15GB headroom > 4GB → q8_0
@@ -832,9 +834,9 @@ mod tests {
     #[test]
     fn test_calculate_max_ctx_known_values() {
         // Qwen 7B Q8_0 on 16GB with q8_0 KV cache
-        // VRAM would allow ~131k but quality cap is 32768×1.5 = 49152
+        // VRAM allows ~131k, quality cap is 49152, but MIN_CTX floor is 65536
         let ctx = LlamaServerArgs::calculate_max_ctx(16.0, 7.0, "Q8_0", "q8_0", "Qwen2.5-Coder-7B-Instruct");
-        assert_eq!(ctx, 49152, "7B on 16GB should hit quality cap at 49152");
+        assert_eq!(ctx, 65536, "7B on 16GB: quality cap 49152 clamped to MIN_CTX 65536");
 
         // 14B Q4_K_M on 12GB with q4_0 KV cache (14B → 2.0× factor, native 32768 → quality cap 65536)
         let ctx = LlamaServerArgs::calculate_max_ctx(12.0, 14.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-14B-Instruct");
@@ -844,9 +846,9 @@ mod tests {
         let ctx = LlamaServerArgs::calculate_max_ctx(8.0, 7.0, "Q4_K_M", "q4_0", "Qwen2.5-Coder-7B-Instruct");
         assert!(ctx >= 16384, "Expected ≥16384, got {ctx}");
 
-        // Tiny VRAM — model doesn't fit
+        // Tiny VRAM — model doesn't fit, but minimum is 65536 for Claude Code
         let ctx = LlamaServerArgs::calculate_max_ctx(2.0, 7.0, "Q8_0", "q8_0", "Qwen2.5-Coder-7B-Instruct");
-        assert_eq!(ctx, 2048);
+        assert_eq!(ctx, 65536);
 
         // DeepSeek 7B has 131072 native context → high cap even for 7B
         let ctx = LlamaServerArgs::calculate_max_ctx(16.0, 7.0, "Q8_0", "q8_0", "DeepSeek-Coder-V2-Lite-7B");

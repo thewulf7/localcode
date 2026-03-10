@@ -10,9 +10,6 @@
     }
   ],
   "run_in_docker": true,
-  "selected_skills": [
-    "context7"
-  ],
   "models_dir": "~/.local/localcode/models",
   "port": 8080,
   "llama_server_args": {

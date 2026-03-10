@@ -14,7 +14,8 @@ pub async fn extract_hf_repo_and_file(
     quant: &Option<String>,
 ) -> (String, Option<String>) {
     if let Some(q) = quant {
-        // It's a dynamic llmfit model, format as `user/model` and `*quant.gguf`
+        // Dynamic llmfit model — build_gguf_candidates will handle resolution.
+        // Return the first candidate here; download_models tries all candidates.
         let parts: Vec<&str> = model_name.split('/').collect();
         let mut base_name = if parts.len() > 1 {
             parts[1]
@@ -49,15 +50,104 @@ pub async fn extract_hf_repo_and_file(
     ("".to_string(), Some(default_url))
 }
 
+/// Build a list of candidate (repo, file) pairs for a GGUF model download.
+/// HuggingFace repo names are case-sensitive — bartowski, the original org, and
+/// lmstudio-community may each use slightly different casing or suffixes.
+/// The download function tries each candidate in order until one succeeds.
+fn build_gguf_candidates(model_name: &str, quant: &str) -> Vec<(String, String)> {
+    let parts: Vec<&str> = model_name.split('/').collect();
+    let org = if parts.len() > 1 { parts[0] } else { "" };
+    let mut base_name = if parts.len() > 1 {
+        parts[1]
+    } else {
+        model_name
+    };
+
+    // Strip quantization suffixes
+    if base_name.ends_with("-AWQ") {
+        base_name = &base_name[..base_name.len() - 4];
+    } else if base_name.ends_with("-GPTQ") || base_name.ends_with("-GGUF") {
+        base_name = &base_name[..base_name.len() - 5];
+    }
+
+    let file = format!("{}-{}.gguf", base_name, quant);
+    let mut candidates = Vec::new();
+
+    // 1. bartowski — the most common GGUF repacker
+    candidates.push((format!("bartowski/{}-GGUF", base_name), file.clone()));
+
+    // 2. Original org's own GGUF repo (some publishers have official GGUFs)
+    if !org.is_empty() {
+        candidates.push((format!("{}/{}-GGUF", org, base_name), file.clone()));
+        // Some orgs use lowercase "-gguf" suffix (e.g. microsoft)
+        candidates.push((format!("{}/{}-gguf", org, base_name), file.clone()));
+    }
+
+    // 3. lmstudio-community — another major GGUF publisher
+    candidates.push((
+        format!("lmstudio-community/{}-GGUF", base_name),
+        file,
+    ));
+
+    candidates
+}
+
+/// Given a `RepoInfo` (from `hf_hub`), find the GGUF file that best matches
+/// the requested quantization level.  Official repos often use simplified
+/// quant names (e.g. `q4` instead of `Q4_K_M`), so we try several heuristics.
+fn find_best_gguf_in_repo(info: &hf_hub::api::RepoInfo, quant: &str) -> Option<String> {
+    let gguf_files: Vec<&str> = info
+        .siblings
+        .iter()
+        .map(|s| s.rfilename.as_str())
+        .filter(|f| f.ends_with(".gguf"))
+        .collect();
+
+    if gguf_files.is_empty() {
+        return None;
+    }
+
+    let q_lower = quant.to_lowercase();
+
+    // Build search tokens from the quant string.
+    // Q4_K_M → ["q4_k_m", "q4_k", "q4"]
+    // Q8_0   → ["q8_0", "q8"]
+    let mut search_tokens = vec![q_lower.clone()];
+    if let Some(pos) = q_lower.rfind('_') {
+        search_tokens.push(q_lower[..pos].to_string());
+        if let Some(pos2) = q_lower[..pos].rfind('_') {
+            search_tokens.push(q_lower[..pos2].to_string());
+        }
+    }
+
+    // Try each token and return the first file that matches (case-insensitive)
+    for token in &search_tokens {
+        for f in &gguf_files {
+            if f.to_lowercase().contains(token) {
+                return Some(f.to_string());
+            }
+        }
+    }
+
+    // No quant match — fall back to the first GGUF file in the repo
+    Some(gguf_files[0].to_string())
+}
+
 pub async fn download_models(
     models: &[ModelSelection],
     models_dir: &std::path::Path,
-) -> Result<()> {
+) -> Result<std::collections::HashMap<String, std::path::PathBuf>> {
     use console::style;
     use indicatif::{ProgressBar, ProgressStyle};
 
+    // Maps model name → actual local path returned by hf_hub::get().
+    // Used by start_llama_swap_docker to generate --model /models/... args
+    // without needing to re-discover files via find_local_gguf.
+    let mut downloaded_files: std::collections::HashMap<String, std::path::PathBuf> = std::collections::HashMap::new();
+
     let api = ApiBuilder::new()
         .with_cache_dir(models_dir.to_path_buf())
+        .with_token(std::env::var("HF_TOKEN").ok())
         .build()?;
 
     // Pre-scan: gather all locally available models
@@ -78,6 +168,16 @@ pub async fn download_models(
             .any(|lm| lm.name == file_name || lm.name.to_lowercase() == file_name.to_lowercase());
 
         if already_exists {
+            // Record the path so config generation can use --model directly.
+            // Use the actual on-disk name (may differ in case from our constructed name).
+            let actual_name = local_models
+                .iter()
+                .find(|lm| lm.name.to_lowercase() == file_name.to_lowercase())
+                .map(|lm| lm.name.clone())
+                .unwrap_or_else(|| file_name.clone());
+            if let Some(rel) = find_local_gguf(models_dir, &actual_name) {
+                downloaded_files.insert(m.name.clone(), models_dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR)));
+            }
             println!(
                 "{} {} {}",
                 style("✓").green().bold(),
@@ -100,36 +200,119 @@ pub async fn download_models(
                 .template("{spinner:.green} {msg}")
                 .unwrap(),
         );
-        pb.set_message(format!("Downloading {}", file_name));
 
-        // Use spawn_blocking since hf_hub is sync
-        let repo_clone = repo.clone();
-        let file_name_clone = file_name.clone();
-        let api_clone = api.clone();
-        tokio::task::spawn_blocking(move || {
-            let repo_api = api_clone.model(repo_clone);
-            // This will block until downloaded or verify it exists
-            repo_api.get(&file_name_clone)
-        })
-        .await??;
+        // For dynamic llmfit models (quant is set), try multiple GGUF sources
+        // since HuggingFace repos are case-sensitive and different publishers
+        // use different naming conventions and quant labels.
+        let mut downloaded = false;
+        if m.quant.is_some() {
+            let quant_str = m.quant.as_deref().unwrap_or("Q4_K_M");
+            let candidates = build_gguf_candidates(&m.name, quant_str);
+            for (candidate_repo, candidate_file) in &candidates {
+                pb.set_message(format!("Trying {}/{}", candidate_repo, candidate_file));
 
-        pb.finish_with_message(format!("✅ {} downloaded.", file_name));
+                // First, try the exact constructed filename
+                let repo_c = candidate_repo.clone();
+                let file_c = candidate_file.clone();
+                let api_c = api.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let repo_api = api_c.model(repo_c);
+                    repo_api.get(&file_c)
+                })
+                .await?;
+
+                if let Ok(path) = result {
+                    downloaded_files.insert(m.name.clone(), path);
+                    pb.finish_with_message(format!(
+                        "✅ {} downloaded from {}",
+                        candidate_file, candidate_repo
+                    ));
+                    downloaded = true;
+                    break;
+                }
+
+                // Exact filename failed — list repo files and find the best
+                // matching GGUF.  Official repos often use different quant
+                // naming (e.g. "q4" instead of "Q4_K_M", or capital first letter).
+                pb.set_message(format!("Searching {} for GGUF files...", candidate_repo));
+                let repo_c2 = candidate_repo.clone();
+                let quant_c = quant_str.to_string();
+                let api_c2 = api.clone();
+                let discovered = tokio::task::spawn_blocking(move || {
+                    let repo_api = api_c2.model(repo_c2);
+                    match repo_api.info() {
+                        Ok(info) => find_best_gguf_in_repo(&info, &quant_c),
+                        Err(_) => None, // repo doesn't exist, skip
+                    }
+                })
+                .await?;
+
+                if let Some(real_file) = discovered {
+                    pb.set_message(format!("Downloading {}", real_file));
+                    let repo_c3 = candidate_repo.clone();
+                    let file_c3 = real_file.clone();
+                    let api_c3 = api.clone();
+                    let result2 = tokio::task::spawn_blocking(move || {
+                        let repo_api = api_c3.model(repo_c3);
+                        repo_api.get(&file_c3)
+                    })
+                    .await?;
+
+                    if let Ok(path) = result2 {
+                        downloaded_files.insert(m.name.clone(), path);
+                        pb.finish_with_message(format!(
+                            "✅ {} downloaded from {}",
+                            real_file, candidate_repo
+                        ));
+                        downloaded = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Legacy static model — single repo from extract_hf_repo_and_file
+            pb.set_message(format!("Downloading {}", file_name));
+            let repo_clone = repo.clone();
+            let file_name_clone = file_name.clone();
+            let api_clone = api.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let repo_api = api_clone.model(repo_clone);
+                repo_api.get(&file_name_clone)
+            })
+            .await?;
+
+            if let Ok(path) = result {
+                downloaded_files.insert(m.name.clone(), path);
+                pb.finish_with_message(format!("✅ {} downloaded.", file_name));
+                downloaded = true;
+            }
+        }
+
+        if !downloaded {
+            pb.finish_with_message(format!(
+                "⚠️  Could not find GGUF for {} in any known repository",
+                m.name
+            ));
+        }
     }
 
-    Ok(())
+    Ok(downloaded_files)
 }
 
 /// Walk `models_dir` looking for a `.gguf` file whose name matches `filename`.
 /// Returns the path relative to `models_dir` using forward-slashes (for Docker).
+/// Comparison is case-insensitive — HF repos may use different casing than the
+/// filename we construct (e.g. "Phi-3-..." vs "phi-3-...").
 fn find_local_gguf(models_dir: &std::path::Path, filename: &str) -> Option<String> {
     use walkdir::WalkDir;
+    let needle = filename.to_lowercase();
     for entry in WalkDir::new(models_dir).into_iter().filter_map(|e| e.ok()) {
         if entry.path().is_file() {
             let is_match = entry
                 .path()
                 .file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n == filename)
+                .map(|n| n.to_lowercase() == needle)
                 .unwrap_or(false);
             if is_match && let Ok(rel) = entry.path().strip_prefix(models_dir) {
                 // Use forward slashes for the Linux container path
@@ -188,6 +371,7 @@ pub async fn start_llama_swap_docker(
     models_dir: &std::path::Path,
     port: u16,
     llama_server_args: Option<&crate::ui::LlamaServerArgs>,
+    downloaded_files: &std::collections::HashMap<String, std::path::PathBuf>,
 ) -> Result<()> {
     println!("📦 Launching localcode container...");
 
@@ -217,6 +401,11 @@ pub async fn start_llama_swap_docker(
     let mut autocomplete_models = Vec::new();
     let mut autocomplete_model_name: Option<String> = None;
 
+    // Pre-scan: detect if any non-primary model qualifies as autocomplete/small.
+    // We need this BEFORE generating YAML so the primary model knows whether to
+    // claim haiku aliases or leave them for the small model.
+    let has_small_model = models.iter().skip(1).any(|m| is_autocomplete_model(&m.name));
+
     let mut assigned_aliases = false;
     for m in models {
         let (repo, file) = extract_hf_repo_and_file(&m.name, &m.quant).await;
@@ -234,12 +423,22 @@ pub async fn start_llama_swap_docker(
             }
         }
 
-        // Prefer local file path if the model is already downloaded
-        let source_args = if let Some(ref f) = file {
+        // Prefer the actual path returned by download_models (hf_hub::get()).
+        // This avoids filename mismatch issues from fuzzy matching (e.g.
+        // "Phi-3-mini-4k-instruct-q4.gguf" vs "phi-3-...-Q4_K_M.gguf").
+        let source_args = if let Some(local_path) = downloaded_files.get(&m.name) {
+            // Convert host path to Docker-relative /models/... path
+            let rel = local_path
+                .strip_prefix(models_dir)
+                .unwrap_or(local_path.as_path());
+            let docker_path = rel.to_string_lossy().replace('\\', "/");
+            format!("--model /models/{}", docker_path)
+        } else if let Some(ref f) = file {
+            // Fallback: try to find the canonical filename locally
             if let Some(rel_path) = find_local_gguf(models_dir, f) {
                 format!("--model /models/{}", rel_path)
             } else {
-                // Fall back to HF download at runtime
+                // Last resort: HF download at runtime (requires SSL in llama-server)
                 let repo_part = if !repo.is_empty() {
                     format!("--hf-repo {}", repo)
                 } else {
@@ -332,7 +531,7 @@ pub async fn start_llama_swap_docker(
             yaml_content.push_str("      - \"claude-opus-4-5\"\n");
             yaml_content.push_str("      - \"claude-opus-4-5-20251101\"\n");
             // If there's NO small model, haiku aliases also go to primary
-            if autocomplete_model_name.is_none() {
+            if !has_small_model {
                 yaml_content.push_str("      - \"claude-3-5-haiku-20241022\"\n");
                 yaml_content.push_str("      - \"claude-3-5-haiku-latest\"\n");
                 yaml_content.push_str("      - \"claude-3-haiku-20240307\"\n");
@@ -548,6 +747,27 @@ mod tests {
         let (repo2, file2) = extract_hf_repo_and_file("some-custom-model", &quant).await;
         assert_eq!(repo2, "bartowski/some-custom-model-GGUF");
         assert_eq!(file2, Some("some-custom-model-Q4_K_M.gguf".to_string()));
+    }
+
+    #[test]
+    fn test_build_gguf_candidates() {
+        // Should try bartowski, original org (GGUF + gguf), and lmstudio-community
+        let candidates = build_gguf_candidates("microsoft/phi-3-mini-4k-instruct", "Q4_K_M");
+        assert_eq!(candidates.len(), 4);
+        assert_eq!(candidates[0].0, "bartowski/phi-3-mini-4k-instruct-GGUF");
+        assert_eq!(candidates[1].0, "microsoft/phi-3-mini-4k-instruct-GGUF");
+        assert_eq!(candidates[2].0, "microsoft/phi-3-mini-4k-instruct-gguf");
+        assert_eq!(candidates[3].0, "lmstudio-community/phi-3-mini-4k-instruct-GGUF");
+        // All should have the same filename
+        for (_, f) in &candidates {
+            assert_eq!(f, "phi-3-mini-4k-instruct-Q4_K_M.gguf");
+        }
+
+        // Without org prefix — only bartowski and lmstudio-community
+        let candidates2 = build_gguf_candidates("some-model", "Q8_0");
+        assert_eq!(candidates2.len(), 2);
+        assert_eq!(candidates2[0].0, "bartowski/some-model-GGUF");
+        assert_eq!(candidates2[1].0, "lmstudio-community/some-model-GGUF");
     }
 
     #[test]

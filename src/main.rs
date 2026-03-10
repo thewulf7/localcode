@@ -147,25 +147,30 @@ async fn main() -> Result<()> {
                     tokio::fs::create_dir_all(&models_dir).await.unwrap_or(());
                 }
 
-                if let Err(e) = runner::download_models(&config.models, &models_dir).await {
-                    println!(
-                        "\n{} {}",
-                        style("⚠️  Download step failed (models may already be cached):")
-                            .yellow()
-                            .bold(),
-                        e
-                    );
-                    println!(
-                        "  {}",
-                        style("Continuing with locally available models...").dim()
-                    );
-                }
+                let downloaded_files = match runner::download_models(&config.models, &models_dir).await {
+                    Ok(files) => files,
+                    Err(e) => {
+                        println!(
+                            "\n{} {}",
+                            style("⚠️  Download step failed (models may already be cached):")
+                                .yellow()
+                                .bold(),
+                            e
+                        );
+                        println!(
+                            "  {}",
+                            style("Continuing with locally available models...").dim()
+                        );
+                        std::collections::HashMap::new()
+                    }
+                };
 
                 if let Err(e) = runner::start_llama_swap_docker(
                     &config.models,
                     &models_dir,
                     config.port,
                     config.llama_server_args.as_ref(),
+                    &downloaded_files,
                 )
                 .await
                 {
